@@ -116,12 +116,6 @@
     setTimeout(() => {
       recorder.start();
     });
-    let vid = document.createElement("video");
-    vid.setAttribute("playsinline", "true");
-    vid.setAttribute("autoplay", "true");
-    vid.setAttribute("muted", "true");
-    vid.srcObject = combinedStream;
-    preview.appendChild(vid);
     recorder.ondataavailable = (e) => {
       chunks.push(e.data);
     };
@@ -131,7 +125,7 @@
     recorder.onresume = () => {
       paused = false;
     };
-    // preview.srcObject = combinedStream;
+    preview.srcObject = combinedStream;
     // Set variables at the end in case of error
     paused = false;
     recording = true;
@@ -148,7 +142,9 @@
         recorder.stop();
       } catch (e) {}
     });
-    recorder.requestData();
+    try {
+      recorder.requestData();
+    } catch (e) {}
     paused = false;
     recording = false;
   }
@@ -204,10 +200,11 @@
   <div class="container" class:done>
     {#if done}
       <h2>Done!</h2>
-      <!-- {#if output.type.includes("/webm")} -->
       <span>
         {#if fixing}
           Fixing...
+        {:else if fixed}
+          Fixed video! It should be seekable now, just hit download!
         {:else}
           This video isn't seekable due to browser restrictions, <span
             class="optimize"
@@ -215,17 +212,25 @@
           >
         {/if}
       </span>
-      <!-- {/if} -->
-      <video src={URL.createObjectURL(output)} />
+      <video
+        on:load={(e) => e.target.play()}
+        autoplay
+        playsinline
+        muted
+        controls
+        src={URL.createObjectURL(output)}
+      />
       <div class="buttons">
-        <button>Download</button><button>Re-record</button>
+        <button
+          on:click={() =>
+            saveBlob(output, "Screen Recording." + output.type.split("/")[1])}
+          >Download</button
+        ><button on:click={() => location.reload()}>Re-record</button>
       </div>
     {:else}
-      <div
-        bind:this={preview}
-        class="preview"
-        style:display={recording ? "block" : "none"}
-      />
+      <div bind class="preview" style:display={recording ? "block" : "none"}>
+        <video bind:this={preview} muted autoplay playsinline />
+      </div>
       <div class="start_stop">
         {#if recording}
           <button
@@ -369,6 +374,7 @@
     button {
       height: auto !important;
       flex: 1;
+      width: 100% !important;
       padding: 10px 20px !important;
     }
   }
@@ -477,6 +483,20 @@
       &:focus {
         outline: none;
         box-shadow: 1px 0px 3px 0 #0003;
+      }
+    }
+  }
+  .done span {
+    margin-bottom: 20px;
+    .optimize {
+      font-style: italic;
+      text-decoration: underline;
+      cursor: pointer;
+      font-weight: bold;
+      transition: background 0.3s ease, color 0.2s ease;
+      &:hover {
+        background: #333;
+        color: #fff;
       }
     }
   }
