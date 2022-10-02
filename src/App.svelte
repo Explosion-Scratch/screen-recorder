@@ -12,7 +12,8 @@
     done = false,
     output,
     fixing = false,
-    fixed = false;
+    fixed = false,
+    error = false;
   //MediaRecorder
   let recorder;
   //Selects
@@ -25,6 +26,7 @@
 
   async function startRecording() {
     fixed = false;
+    error = false;
     fixing = false;
     done = false;
     output = null;
@@ -182,6 +184,17 @@
     fixing = false;
     fixed = true;
   }
+  function saveBlob(blob, fileName) {
+    var a = document.createElement("a");
+    document.body.appendChild(a);
+    a.style = "display: none";
+
+    var url = window.URL.createObjectURL(blob);
+    a.href = url;
+    a.download = fileName;
+    a.click();
+    window.URL.revokeObjectURL(url);
+  }
   function readAsArrayBuffer(blob) {
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
@@ -194,11 +207,28 @@
       };
     });
   }
+  async function record() {
+    try {
+      await startRecording();
+    } catch (e) {
+      error = e.message;
+      stopRecording();
+    }
+  }
 </script>
 
 <div class="outer">
-  <div class="container" class:done>
-    {#if done}
+  <div class="container" class:done class:error>
+    {#if error}
+      <span
+        >There was an error: {typeof error === "string"
+          ? error
+          : "<unknown>"}</span
+      >
+      <div class="buttons">
+        <button on:click={() => location.reload()}>Reload page</button>
+      </div>
+    {:else if done}
       <h2>Done!</h2>
       <span>
         {#if fixing}
@@ -257,9 +287,7 @@
             {/if}
           </button>
         {/if}
-        <button
-          on:click={() => (recording ? stopRecording() : startRecording())}
-        >
+        <button on:click={() => (recording ? stopRecording() : record())}>
           {#if recording}
             <svg width="32" height="32" viewBox="0 0 256 256"
               ><path
@@ -365,7 +393,7 @@
     width: 100vw;
     height: 100vh;
   }
-  .done .buttons {
+  :is(.done, .error) .buttons {
     display: flex;
     width: 100%;
     gap: 0.2rem;
