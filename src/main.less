@@ -1,0 +1,72 @@
+// Change these!
+@color: #a282ec;
+@text: #2c075b;
+
+// A few nice presets
+.button() {
+  background: fade(darken(@color, 10), 80%);
+  border: 0.15rem solid darken(@color, 5);
+  color: lighten(@color, 50);
+  font-weight: 200;
+  border-radius: 0.2rem;
+  cursor: pointer;
+  transition: background-color 0.2s ease, color 0.3s ease, box-shadow 0.5s ease,
+    transform 0.2s ease;
+  &:hover {
+    background: fade(@color, 10%);
+    color: darken(@color, 30);
+    box-shadow: 0 0 0 3px fade(@color, 10%);
+  }
+  &:active {
+    transform: scale(0.98);
+  }
+  &:focus {
+    box-shadow: 0 0 0 5px fade(@color, 10%);
+  }
+  &:hover:focus {
+    box-shadow: 0 0 0 3px fade(@color, 10%), 0 0 0 5px fade(@color, 10%);
+  }
+  &.secondary,
+  [secondary] {
+    background: transparent;
+    color: darken(@color, 25);
+  }
+  &:disabled,
+  &[disabled] {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+}
+
+.flex() {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  flex-direction: column;
+}
+
+.full() {
+  width: 100%;
+  height: 100%;
+}
+
+.font() {
+  &.light {
+    font-weight: 100;
+  }
+  &.italic {
+    font-weight: 200;
+    font-style: italic;
+  }
+}
+
+.reset() {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  &:focus {
+    outline: none;
+  }
+  background: transparent;
+  border: none;
+}
