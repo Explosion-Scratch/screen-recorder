@@ -33,7 +33,13 @@
     conversionScreen = false,
     conversionDone = false,
     worker,
-    conversion_opts;
+    conversion_opts,
+    outputExpected = {
+      name: "output.gif",
+      mimeType: "image/gif",
+      extension: "gif",
+    },
+    conversionOutputFile;
 
   //MediaRecorder
   let recorder;
@@ -41,7 +47,33 @@
   let videoSelect = "screen",
     audioSelect = "system";
   let recording = false;
-
+  $: {
+    // This is bad JavaScript kids, don't try this at home
+    document.title = error
+      ? "Error!"
+      : recording
+      ? "Recording..."
+      : converting
+      ? "Converting"
+      : done
+      ? "Done!"
+      : "Screen Recorder";
+  }
+  $: {
+    let emoji = error
+      ? "✋"
+      : recording
+      ? "⭕"
+      : converting
+      ? "📂"
+      : done
+      ? "✔️"
+      : "🎥";
+    document.querySelector("link[rel=icon]").href =
+      "data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%22256%22 height=%22256%22 viewBox=%220 0 100 100%22><rect width=%22100%22 height=%22100%22 rx=%2220%22 fill=%22%23f4f4f4%22></rect><text x=%2250%%22 y=%2250%%22 dominant-baseline=%22central%22 text-anchor=%22middle%22 font-size=%2270%22>" +
+      emoji +
+      "</text></svg>";
+  }
   const MIME_TYPES = {
     "video/webm;codecs=opus": "webm",
     "video/webm;codecs=vp8": "webm",
@@ -63,18 +95,27 @@
       var message = event.data;
       if (message.type == "ready") {
         console.log("Loaded worker");
-        worker.postMessage({
-          type: "command",
-          arguments: ["-help"],
-        });
+        notifs.show("File conversion web worker ready");
+      } else if (message.type === "loaded") {
+        notifs.show("Worker loaded");
       } else if (message.type == "stdout") {
         console.log(message.data);
-        conversionOutput += "\n" + message.data;
+        if (conversionOutput === "Starting conversion...") {
+          conversionOutput = "";
+        }
+        conversionOutput = `${conversionOutput.trim()}\n${message.data}\n\n`;
+        document.querySelector("pre.conversion_output").scrollBy(0, 10000);
       } else if (message.type == "start") {
-        conversionOutput = "";
+        conversionOutput = "Starting conversion...";
         console.log("Worker got command");
       } else if (message.type === "done") {
+        conversionDone = true;
+        converting = false;
         console.log(message);
+        conversionOutputFile = new Blob([message.data[0].data], {
+          type: outputExpected.mimeType,
+        });
+        outputExpected.name = message.data[0].name;
       }
     };
 
@@ -262,6 +303,24 @@
       paused,
       recording,
       fixBlob,
+      done,
+      chunks,
+      output,
+      error,
+      mime,
+      alteredVid,
+      videoConstraints,
+      audioConstraints,
+      converting,
+      conversionOutput,
+      conversionScreen,
+      worker,
+      conversion_opts,
+      videoSelect,
+      audioSelect,
+      addFilesToConversion,
+      getConstraints,
+      alterVid,
     });
     setTimeout(() => {
       recorder.start();
@@ -433,15 +492,19 @@
   function getExtension(type) {
     return MIME_TYPES[type] || type.split("/")[0];
   }
-  function addFilesToConversion() {
+  async function addFilesToConversion() {
+    console.log(output);
     conversion_opts = {
       files: [
         {
           name: "input.webm",
-          data: readAsArrayBuffer(output),
+          data: new Uint8Array(await readAsArrayBuffer(output)),
         },
       ],
     };
+    conversionScreen = true;
+    done = false;
+    console.log("Added files, ready for conversion now: ", conversion_opts);
   }
 </script>
 
@@ -485,49 +548,90 @@
     {:else if conversionScreen}
       <div class="buttons">
         <h2>Convert video file</h2>
-        <div class="buttons">
-          <button
-            on:click={() => (
-              worker.postMessage({
-                type: "command",
-                arguments: [
-                  "-t",
-                  "5",
-                  "-i",
-                  "input.webm",
-                  "-vf",
-                  "showinfo",
-                  "-strict",
-                  "-2",
-                  "output.gif",
-                ],
-                ...conversion_opts,
-              }),
-              (converting = true)
-            )}>Start converting</button
-          >
-        </div>
-        {#if converting}
+        {#if !conversionDone}
+          <div class="buttons">
+            <!-- TODO: Let user choose what -->
+            <button
+              on:click={(e) => {
+                if (e.target.disabled) {
+                  return;
+                }
+                addFilesToConversion();
+                outputExpected = {
+                  mimeType: "image/gif",
+                  name: "output.gif",
+                  extension: "gif",
+                };
+                worker.postMessage({
+                  type: "command",
+                  arguments: [
+                    "-t",
+                    "5",
+                    "-i",
+                    "input.webm",
+                    "-vf",
+                    "showinfo",
+                    "-strict",
+                    "-2",
+                    "output.gif",
+                  ],
+                  ...conversion_opts,
+                });
+                converting = true;
+              }}
+              disabled={converting}
+              >{#if converting}Converting...{:else}Start converting{/if}</button
+            >
+          </div>
+        {/if}
+        {#if converting && !conversionDone}
           <pre class="conversion_output">{conversionOutput}</pre>
         {/if}
         {#if conversionDone}
-          <video
-            on:load={(e) => e.target.play()}
-            autoplay
-            playsinline
-            muted
-            controls
-            src={URL.createObjectURL(output)}
-          />
+          <details class="conversion_logs">
+            <summary>Show logs</summary>
+            <pre class="conversion_output">{conversionOutput}</pre>
+          </details>
+        {/if}
+        {#if conversionDone}
+          {#if outputExpected.mimeType.startsWith("video/")}
+            <video
+              on:load={(e) => e.target.play()}
+              autoplay
+              playsinline
+              muted
+              controls
+              src={URL.createObjectURL(conversionOutputFile)}
+            />
+          {:else if outputExpected.mimeType.startsWith("image/")}
+            <img
+              src={URL.createObjectURL(conversionOutputFile)}
+              alt="Conversion output"
+            />
+          {/if}
           <div class="buttons">
+            <button
+              on:click={() =>
+                saveBlob(conversionOutputFile, outputExpected.name)}
+              >Download</button
+            >
             <button
               on:click={() =>
                 saveBlob(
                   output,
-                  "Screen Recording." + output.type.split("/")[1]
-                )}>Download</button
+                  "Screen Recording." + getExtension(output.type)
+                )}>Download original</button
             >
-            <button on:click={() => location.reload()}>Re-convert</button>
+            <button
+              on:click={() => (
+                (conversionDone = false),
+                (converting = false),
+                (conversionOutput = ""),
+                (conversion_opts = ""),
+                (outputExpected = {}),
+                (conversionOutputFile = null)
+              )}>Re-convert</button
+            >
           </div>
         {/if}
       </div>
@@ -708,6 +812,9 @@
     display: flex;
     width: 80vw;
     max-width: 400px;
+    &.conversion {
+      max-width: 600px;
+    }
     margin: 0 auto;
     border: 1px dashed #ccc;
     border-radius: 10px;
