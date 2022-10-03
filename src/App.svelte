@@ -3,6 +3,7 @@
   import notifs from "./notifs.js";
   import ToastContainer from "./ToastContainer.svelte";
   import alterVid from "./canvasVid.js";
+  import { onMount } from "svelte";
 
   //Streams
   let videoStream,
@@ -16,7 +17,23 @@
     output,
     error = false,
     mime,
-    alteredVid;
+    alteredVid,
+    videoConstraints = {
+      width: 1280,
+      height: 720,
+      frameRate: { ideal: 30 },
+    },
+    audioConstraints = {
+      autoGainControl: false,
+      echoCancellation: false,
+      noiseSuppression: false,
+    },
+    converting = false,
+    conversionOutput = "Starting conversion...",
+    conversionScreen = false,
+    conversionDone = false,
+    worker,
+    conversion_opts;
 
   //MediaRecorder
   let recorder;
@@ -39,6 +56,39 @@
     "video/x-msvideo": "avi",
     "video/x-ms-wmv": "wmv",
   };
+
+  onMount(() => {
+    worker = new Worker("worker.js");
+    worker.onmessage = function (event) {
+      var message = event.data;
+      if (message.type == "ready") {
+        console.log("Loaded worker");
+        worker.postMessage({
+          type: "command",
+          arguments: ["-help"],
+        });
+      } else if (message.type == "stdout") {
+        console.log(message.data);
+        conversionOutput += "\n" + message.data;
+      } else if (message.type == "start") {
+        conversionOutput = "";
+        console.log("Worker got command");
+      } else if (message.type === "done") {
+        console.log(message);
+      }
+    };
+
+    const CUSTOM_LABELS = {};
+    Object.defineProperty(MediaStreamTrack.prototype, "lbl", {
+      get() {
+        return CUSTOM_LABELS[this.id] || this.label;
+      },
+      set(label) {
+        CUSTOM_LABELS[this.id] = label;
+        return label;
+      },
+    });
+  });
 
   async function startRecording() {
     error = false;
@@ -77,8 +127,15 @@
 
     if (external.audio || external.video) {
       console.log("Getting from external", external);
-      let _stream = await navigator.mediaDevices.getUserMedia(external);
+      let _stream = await navigator.mediaDevices.getUserMedia(
+        getConstraints(external)
+      );
       tracks = [...tracks, ..._stream.getTracks()];
+      _stream.getTracks().forEach((track) => {
+        track.lbl = `External ${
+          track.kind === "audio" ? "microphone" : "camera"
+        }`;
+      });
       console.log("Got stream");
       if (external.audio) {
         audioStreams.push(_stream);
@@ -98,8 +155,13 @@
     }
     if (screen.audio || screen.video) {
       console.log("Getting from screen", screen);
-      let _stream = await navigator.mediaDevices.getDisplayMedia(screen);
+      let _stream = await navigator.mediaDevices.getDisplayMedia(
+        getConstraints(screen)
+      );
       tracks = [...tracks, ..._stream.getTracks()];
+      _stream.getTracks().forEach((track) => {
+        track.lbl = `System ${track.kind === "audio" ? "audio" : "screen"}`;
+      });
       console.log("Got stream");
       if (screen.audio) {
         audioStreams.push(_stream);
@@ -127,10 +189,18 @@
       let merged = mergeStreams(audioStreams[0], audioStreams[1]);
       console.log(merged);
       audioStream = new MediaStream(merged);
+      audioStream.getTracks().forEach((track) => {
+        track.lbl = `${track.kind[0].toUpperCase()}${track.kind.slice(
+          1
+        )} merged audio stream`;
+      });
       notifs.show("Merged system and microphone audio");
     } else {
       if (audioStreams.length !== 1) {
-        throw new Error("You shouldn't see this error");
+        console.debug({ audioStreams });
+        throw new Error(
+          "Expected 1 audio track but found " + audioStreams.length
+        );
       }
       audioStream = new MediaStream(audioStreams[0]);
     }
@@ -143,21 +213,24 @@
       // TODO: Make alterVid merge both
       let merged = await alterVid({
         track: videoStreams[0].getVideoTracks()[0],
+        maxWidth: videoConstraints.width,
       });
       alteredVid = merged;
       videoStream = new MediaStream(merged.stream);
+      videoStream.getTracks().forEach((track) => {
+        track.lbl = `${track.kind[0].toUpperCase()}${track.kind.slice(
+          1
+        )} from merged video stream`;
+      });
       notifs.show("Merged webcam and system video");
     } else {
-      let merged = await alterVid({
-        track: videoStreams[0].getVideoTracks()[0],
-      });
-      alteredVid = merged;
-      console.log(merged)
-      videoStream = new MediaStream(merged.stream);
-      /* if (videoStreams.length !== 1) {
-        throw new Error("You shouldn't see this error");
+      if (videoStreams.length !== 1) {
+        console.debug({ videoStreams });
+        throw new Error(
+          "Expected 1 video track but found " + videoStreams.length
+        );
       }
-      videoStream = new MediaStream(videoStreams[0]); */
+      videoStream = new MediaStream(videoStreams[0]);
     }
 
     combinedStream = new MediaStream([
@@ -194,7 +267,7 @@
       recorder.start();
     });
     recorder.onstart = () => {
-      notifs.show("Started recording");
+      console.log("Started recording");
     };
     recorder.ondataavailable = (e) => {
       chunks.push(e.data);
@@ -315,6 +388,16 @@
     });
     return fixed;
   }
+  function getConstraints(a) {
+    let out = {};
+    if (a.video === true) {
+      out.video = videoConstraints;
+    }
+    if (a.audio === true) {
+      out.audio = audioConstraints;
+    }
+    return out;
+  }
   function saveBlob(blob, fileName) {
     var a = document.createElement("a");
     document.body.appendChild(a);
@@ -350,12 +433,27 @@
   function getExtension(type) {
     return MIME_TYPES[type] || type.split("/")[0];
   }
+  function addFilesToConversion() {
+    conversion_opts = {
+      files: [
+        {
+          name: "input.webm",
+          data: readAsArrayBuffer(output),
+        },
+      ],
+    };
+  }
 </script>
 
 <!-- BEGIN_HTML -->
 <ToastContainer />
 <div class="outer">
-  <div class="container" class:done class:error>
+  <div
+    class="container"
+    class:done
+    class:error
+    class:conversion={conversionScreen}
+  >
     {#if error}
       <span
         >There was an error: {typeof error === "string"
@@ -380,7 +478,58 @@
           on:click={() =>
             saveBlob(output, "Screen Recording." + output.type.split("/")[1])}
           >Download</button
-        ><button on:click={() => location.reload()}>Re-record</button>
+        >
+        <button on:click={() => location.reload()}>Re-record</button>
+        <button on:click={() => addFilesToConversion()}>Convert</button>
+      </div>
+    {:else if conversionScreen}
+      <div class="buttons">
+        <h2>Convert video file</h2>
+        <div class="buttons">
+          <button
+            on:click={() => (
+              worker.postMessage({
+                type: "command",
+                arguments: [
+                  "-t",
+                  "5",
+                  "-i",
+                  "input.webm",
+                  "-vf",
+                  "showinfo",
+                  "-strict",
+                  "-2",
+                  "output.gif",
+                ],
+                ...conversion_opts,
+              }),
+              (converting = true)
+            )}>Start converting</button
+          >
+        </div>
+        {#if converting}
+          <pre class="conversion_output">{conversionOutput}</pre>
+        {/if}
+        {#if conversionDone}
+          <video
+            on:load={(e) => e.target.play()}
+            autoplay
+            playsinline
+            muted
+            controls
+            src={URL.createObjectURL(output)}
+          />
+          <div class="buttons">
+            <button
+              on:click={() =>
+                saveBlob(
+                  output,
+                  "Screen Recording." + output.type.split("/")[1]
+                )}>Download</button
+            >
+            <button on:click={() => location.reload()}>Re-convert</button>
+          </div>
+        {/if}
       </div>
     {:else}
       <div bind class="preview" style:display={recording ? "block" : "none"}>
@@ -435,7 +584,7 @@
         <div class="track_list">
           {#each tracks as track}
             <div class="track">
-              <span class="title">{track.label}</span>
+              <span class="title">{track.lbl}</span>
               <div class="buttons">
                 <button
                   class="pause_resume"
@@ -530,7 +679,18 @@
     width: 100vw;
     height: 100vh;
   }
-  :is(.done, .error) .buttons {
+  .conversion_output {
+    font-family: "Courier New", Courier, monospace;
+    padding: 10px;
+    border-radius: 3px;
+    border: 1px solid #ccc;
+    white-space: pre;
+    word-break: keep-all;
+    overflow-wrap: normal;
+    overflow: scroll;
+    max-height: 300px;
+  }
+  :is(.done, .error, .conversion) .buttons {
     display: flex;
     width: 100%;
     gap: 0.2rem;

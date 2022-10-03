@@ -16,6 +16,9 @@
  * @property {Boolean} [show=false] Whether to show the canvas
  * @property {Function} [init=() => {}] Init function
  * @property {Function} [done=()=> {}] Function called when finished
+ * @property {CanvasRenderingContext2d} [ctx] Canvas context
+ * @property {HTMLCanvasElement} canvas Canvas element
+ * @property {Boolean} [setSize=false] Set the size of the canvas based on the frame?
  */
 /**
  * @typedef {Object} AlterVideoReturn
@@ -53,6 +56,9 @@ export default async function ({
   done = () => {},
   canvas,
   ctx,
+  fps = 30,
+  maxWidth = 1280,
+  setSize = true,
 }) {
   let stillGoing = true;
   if (!track) {
@@ -70,6 +76,8 @@ export default async function ({
     ctx = canvas.getContext("2d");
   }
 
+  console.log(track);
+
   await init({ track, canvas });
   drawStream(track, cb, done, canvas);
 
@@ -77,27 +85,40 @@ export default async function ({
     const processor = new MediaStreamTrackProcessor(track);
     const reader = processor.readable.getReader();
     chunk();
+    let frame = 0;
     function chunk() {
-      reader.read().then(async (a) => {
-        if (
-          canvas.width !== a.displayWidth ||
-          canvas.height !== a.displayHeight
-        ) {
-          canvas.width = a.displayWidth;
-          canvas.height = a.displayHeight;
+      reader.read().then((a) => {
+        //Resize max every 50 frames
+        if (setSize && frame % 50 === 0) {
+          let w =
+            a.value.displayWidth > maxWidth ? maxWidth : a.value.displayWidth;
+          // Find ratio between actual width and ideal width and size
+          let h =
+            a.value.displayWidth > maxWidth
+              ? a.value.displayHeight * (maxWidth / a.value.displayWidth)
+              : a.value.displayHeight;
+          if (canvas.width !== w) {
+            canvas.width = w;
+          }
+          if (canvas.hiehgt !== h) {
+            canvas.height = h;
+          }
         }
-        await cb({ done: a.done, frame: a.value, canvas, track, ctx });
+        frame++;
+        cb({ done: a.done, frame: a.value, canvas, track, ctx });
         if (a.done || !stillGoing) {
           done({ done: true, frame: a.value, canvas, track });
+          a.value.close();
         } else {
-          chunk();
+          a.value.close();
+          setTimeout(chunk, 1000 / fps);
         }
-        a.value.close();
       });
     }
   }
 
   const stream = canvas.captureStream();
+  stream.getTracks()[0].lbl = "Canvas video track";
 
   return {
     canvas,
