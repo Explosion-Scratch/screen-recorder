@@ -1,5 +1,8 @@
 <script>
   import * as ebml from "./ts-ebml.min.js";
+  import notifs from "./notifs.js";
+  import ToastContainer from "./ToastContainer.svelte";
+  import alterVid from "./canvasVid.js";
 
   //Streams
   let videoStream,
@@ -12,7 +15,9 @@
     done = false,
     output,
     error = false,
-    mime;
+    mime,
+    alteredVid;
+
   //MediaRecorder
   let recorder;
   //Selects
@@ -47,6 +52,10 @@
       video: false,
       audio: false,
     };
+    if (videoSelect === "mix") {
+      external.video = true;
+      screen.video = true;
+    }
     if (videoSelect === "screen") {
       screen.video = true;
     }
@@ -64,6 +73,7 @@
       screen.audio = true;
     }
     let audioStreams = [];
+    let videoStreams = [];
 
     if (external.audio || external.video) {
       console.log("Getting from external", external);
@@ -74,12 +84,17 @@
         audioStreams.push(_stream);
       }
       if (external.video) {
-        let tracks = _stream.getVideoTracks();
-        if (!tracks.length) {
-          throw new Error("No video stream found");
-        }
-        videoStream = new MediaStream(tracks);
+        videoStreams.push(_stream);
       }
+      notifs.show(
+        `Got ${
+          external.audio && external.video
+            ? "video and audio"
+            : external.audio
+            ? "audio"
+            : "video"
+        } stream from external device`
+      );
     }
     if (screen.audio || screen.video) {
       console.log("Getting from screen", screen);
@@ -90,12 +105,17 @@
         audioStreams.push(_stream);
       }
       if (screen.video) {
-        let tracks = _stream.getVideoTracks();
-        if (!tracks.length) {
-          throw new Error("No video stream found");
-        }
-        videoStream = new MediaStream(tracks);
+        videoStreams.push(_stream);
       }
+      notifs.show(
+        `Got ${
+          screen.audio && screen.video
+            ? "video and audio"
+            : screen.audio
+            ? "audio"
+            : "video"
+        } stream from screen share`
+      );
     }
 
     if (audioSelect === "both") {
@@ -107,11 +127,37 @@
       let merged = mergeStreams(audioStreams[0], audioStreams[1]);
       console.log(merged);
       audioStream = new MediaStream(merged);
+      notifs.show("Merged system and microphone audio");
     } else {
       if (audioStreams.length !== 1) {
         throw new Error("You shouldn't see this error");
       }
       audioStream = new MediaStream(audioStreams[0]);
+    }
+    if (videoSelect === "mix") {
+      if (videoStreams.length !== 2) {
+        throw new Error(
+          "Expected both webcam and screen video tracks to merge"
+        );
+      }
+      // TODO: Make alterVid merge both
+      let merged = await alterVid({
+        track: videoStreams[0].getVideoTracks()[0],
+      });
+      alteredVid = merged;
+      videoStream = new MediaStream(merged.stream);
+      notifs.show("Merged webcam and system video");
+    } else {
+      let merged = await alterVid({
+        track: videoStreams[0].getVideoTracks()[0],
+      });
+      alteredVid = merged;
+      console.log(merged)
+      videoStream = new MediaStream(merged.stream);
+      /* if (videoStreams.length !== 1) {
+        throw new Error("You shouldn't see this error");
+      }
+      videoStream = new MediaStream(videoStreams[0]); */
     }
 
     combinedStream = new MediaStream([
@@ -147,6 +193,9 @@
     setTimeout(() => {
       recorder.start();
     });
+    recorder.onstart = () => {
+      notifs.show("Started recording");
+    };
     recorder.ondataavailable = (e) => {
       chunks.push(e.data);
     };
@@ -163,16 +212,48 @@
   }
   function stopRecording() {
     tracks.forEach((track) => track.stop());
+    if (!recorder) {
+      return console.log("Couldn't find recorder, probably some other error");
+    }
     recorder.onstop = async () => {
+      if (alteredVid) {
+        alteredVid.stop();
+      }
+      notifs.show("Stopped recording");
       console.log(recorder.mimeType, mime);
       let blob = new Blob(chunks, { type: mime });
       if (mime.startsWith("video/webm")) {
+        notifs.show("Making video seekable...");
+        let making_seekable = true;
         // TODO: FixBlob can take a bit, give indication to user
-        output = await fixBlob(blob);
+        fixBlob(blob)
+          .then((b) => {
+            output = b;
+            done = true;
+            making_seekable = false;
+            notifs.show("Made video seekable!");
+          })
+          .catch((e) => {
+            console.error(e);
+            err();
+          });
+        setTimeout(() => {
+          if (making_seekable) {
+            err();
+          }
+        }, 5000);
+        function err() {
+          done = true;
+          output = blob;
+          notifs.show(
+            "Error making video seekable, reverting to non-seekable version",
+            { timeout: 5000 }
+          );
+        }
       } else {
         output = blob;
+        done = true;
       }
-      done = true;
     };
     recorder.addEventListener("dataavailable", () => {
       //requestData needs to have state: recording
@@ -271,6 +352,8 @@
   }
 </script>
 
+<!-- BEGIN_HTML -->
+<ToastContainer />
 <div class="outer">
   <div class="container" class:done class:error>
     {#if error}
@@ -412,6 +495,7 @@
           <select bind:value={videoSelect}>
             <option value="screen">Screen</option>
             <option value="camera">Webcam</option>
+            <option value="mix">Overlay webcam on screen</option>
           </select>
           <h2>Audio device</h2>
           <select bind:value={audioSelect}>
