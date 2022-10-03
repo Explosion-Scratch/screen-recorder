@@ -11,23 +11,32 @@
     chunks = [],
     done = false,
     output,
-    fixing = false,
-    fixed = false,
-    error = false;
+    error = false,
+    mime;
   //MediaRecorder
   let recorder;
   //Selects
   let videoSelect = "screen",
     audioSelect = "system";
   let recording = false;
-  import { onMount } from "svelte";
 
-  onMount(() => {});
+  const MIME_TYPES = {
+    "video/webm;codecs=opus": "webm",
+    "video/webm;codecs=vp8": "webm",
+    "video/webm;codecs=daala": "webm",
+    "video/webm;codecs=h264": "webm",
+    "video/mpeg": "mpg",
+    "video/x-matroska;codecs=avc1,opus": "mkv",
+    "video/x-flv": "flv",
+    "video/mp4": "mp4",
+    "video/3gpp": "3gpp",
+    "video/quicktime": "mov",
+    "video/x-msvideo": "avi",
+    "video/x-ms-wmv": "wmv",
+  };
 
   async function startRecording() {
-    fixed = false;
     error = false;
-    fixing = false;
     done = false;
     output = null;
     let screen = {
@@ -50,6 +59,11 @@
     if (audioSelect === "microphone") {
       external.audio = true;
     }
+    if (audioSelect === "both") {
+      external.audio = true;
+      screen.audio = true;
+    }
+    let audioStreams = [];
 
     if (external.audio || external.video) {
       console.log("Getting from external", external);
@@ -57,11 +71,7 @@
       tracks = [...tracks, ..._stream.getTracks()];
       console.log("Got stream");
       if (external.audio) {
-        let tracks = _stream.getAudioTracks();
-        if (!tracks.length) {
-          throw new Error("No audio stream found");
-        }
-        audioStream = new MediaStream(tracks);
+        audioStreams.push(_stream);
       }
       if (external.video) {
         let tracks = _stream.getVideoTracks();
@@ -77,11 +87,7 @@
       tracks = [...tracks, ..._stream.getTracks()];
       console.log("Got stream");
       if (screen.audio) {
-        let tracks = _stream.getAudioTracks();
-        if (!tracks.length) {
-          throw new Error("No audio stream found");
-        }
-        audioStream = new MediaStream(tracks);
+        audioStreams.push(_stream);
       }
       if (screen.video) {
         let tracks = _stream.getVideoTracks();
@@ -91,17 +97,40 @@
         videoStream = new MediaStream(tracks);
       }
     }
+
+    if (audioSelect === "both") {
+      if (audioStreams.length !== 2) {
+        throw new Error(
+          "Expected both system and microphone audio tracks to merge"
+        );
+      }
+      let merged = mergeStreams(audioStreams[0], audioStreams[1]);
+      console.log(merged);
+      audioStream = new MediaStream(merged);
+    } else {
+      if (audioStreams.length !== 1) {
+        throw new Error("You shouldn't see this error");
+      }
+      audioStream = new MediaStream(audioStreams[0]);
+    }
+
     combinedStream = new MediaStream([
       ...videoStream.getTracks(),
       ...audioStream.getTracks(),
     ]);
+
     tracks.forEach((track) => {
       track.onended = () => {
         console.log("Track ended: ", track);
         stopRecording();
       };
     });
-    recorder = new MediaRecorder(combinedStream);
+    if (!mime) {
+      throw new Error("No supported mimeType found");
+    }
+    recorder = new MediaRecorder(combinedStream, {
+      mimeType: mime,
+    });
     Object.assign(window, {
       recorder,
       videoStream,
@@ -134,8 +163,15 @@
   }
   function stopRecording() {
     tracks.forEach((track) => track.stop());
-    recorder.onstop = () => {
-      output = new Blob(chunks, { type: recorder.mimeType });
+    recorder.onstop = async () => {
+      console.log(recorder.mimeType, mime);
+      let blob = new Blob(chunks, { type: mime });
+      if (mime.startsWith("video/webm")) {
+        // TODO: FixBlob can take a bit, give indication to user
+        output = await fixBlob(blob);
+      } else {
+        output = blob;
+      }
       done = true;
     };
     recorder.addEventListener("dataavailable", () => {
@@ -150,6 +186,23 @@
     paused = false;
     recording = false;
   }
+  function mergeStreams(stream1, stream2) {
+    const ctx = new AudioContext();
+    const source1 = ctx.createMediaStreamSource(stream1);
+    const source2 = ctx.createMediaStreamSource(stream2);
+    const destination = ctx.createMediaStreamDestination();
+
+    const s1_gain = ctx.createGain();
+    const s2_gain = ctx.createGain();
+
+    s1_gain.gain.value = 0.7;
+    s2_gain.gain.value = 0.7;
+
+    source1.connect(s1_gain).connect(destination);
+    source2.connect(s2_gain).connect(destination);
+
+    return destination.stream.getTracks();
+  }
   function stopTrack(track) {
     if (!tracks.includes(track)) {
       throw new Error("Couldn't find track in list");
@@ -158,31 +211,28 @@
     combinedStream.removeTrack(track);
   }
   async function fixBlob(blob) {
-    fixing = true;
-    const { Decoder, Encoder, tools, Reader } = ebml;
+    const { Decoder, tools, Reader } = ebml;
     const decoder = new Decoder();
     const reader = new Reader();
     reader.logging = true;
-    reader.logGroup = "Raw WebM file";
+    reader.logGroup = "Fixing file";
     reader.drop_default_duration = false;
-    const webMBuf = await readAsArrayBuffer(blob);
-    const elms = decoder.decode(webMBuf);
+    const buffer = await readAsArrayBuffer(blob);
+    const elms = decoder.decode(buffer);
     elms.forEach((elm) => {
       reader.read(elm);
     });
     reader.stop();
-    const refinedMetadataBuf = tools.makeMetadataSeekable(
+    const metadata = tools.makeMetadataSeekable(
       reader.metadatas,
       reader.duration,
       reader.cues
     );
-    const body = webMBuf.slice(reader.metadataSize);
-    const refinedWebM = new Blob([refinedMetadataBuf, body], {
+    const body = buffer.slice(reader.metadataSize);
+    const fixed = new Blob([metadata, body], {
       type: "video/webm",
     });
-    output = refinedWebM;
-    fixing = false;
-    fixed = true;
+    return fixed;
   }
   function saveBlob(blob, fileName) {
     var a = document.createElement("a");
@@ -211,9 +261,13 @@
     try {
       await startRecording();
     } catch (e) {
+      console.error(e);
       error = e.message;
       stopRecording();
     }
+  }
+  function getExtension(type) {
+    return MIME_TYPES[type] || type.split("/")[0];
   }
 </script>
 
@@ -230,18 +284,6 @@
       </div>
     {:else if done}
       <h2>Done!</h2>
-      <span>
-        {#if fixing}
-          Fixing...
-        {:else if fixed}
-          Fixed video! It should be seekable now, just hit download!
-        {:else}
-          This video isn't seekable due to browser restrictions, <span
-            class="optimize"
-            on:click={() => fixBlob(output)}>try to fix?</span
-          >
-        {/if}
-      </span>
       <video
         on:load={(e) => e.target.play()}
         autoplay
@@ -375,6 +417,17 @@
           <select bind:value={audioSelect}>
             <option value="system">System audio</option>
             <option value="microphone">Mic audio</option>
+            <option value="both">Both system and mic</option>
+          </select>
+          <h2>Output format</h2>
+          <select bind:value={mime}>
+            {#each Object.keys(MIME_TYPES).filter( (i) => MediaRecorder.isTypeSupported(i) ) as type}
+              <option value={type}>
+                .{getExtension(type)}
+                {type.split("/")[0]}
+                {#if type.split(";").length > 1}({type.split(";")[1]}){/if}
+              </option>
+            {/each}
           </select>
         </div>
       {/if}
