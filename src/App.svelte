@@ -121,8 +121,9 @@
     },
     {
       label: "Custom FFMPEG Command",
+      // This syntax is janky, I know
       command:
-        "[PROMPT=What command would you like to run? (Use '[INPUT]' for the input file and '[OUTPUT=extension]') for output files.",
+        "[PROMPT=What command would you like to run? (Use '!$%INPUT%$!' for the input file and '!$%OUTPUT=extension%$!') for output files.]",
     },
   ];
   onMount(() => {
@@ -597,6 +598,36 @@
       error = e;
     }
   }
+  function replaceCommand(command, selected) {
+    command = command
+      .replace(/\[OUTPUT=([^\]]+)\]/, (_, expected) => {
+        outputExpected = {
+          extension: expected,
+          name: `output.${expected}`,
+          // TODO: Better mimeType handling
+          mimeType:
+            (["gif", "png", "jpeg", "tiff"].includes(expected)
+              ? "image"
+              : "video") +
+            "/" +
+            expected,
+        };
+        selected.expected = outputExpected;
+        return `output.${expected}`;
+      })
+      .replace("[INPUT]", "input." + getExtension(output.type))
+      .replace(/\[PROMPT=([^\]]+)\]/, (_, p) =>
+        replaceCommand(
+          prompt(p.replaceAll("!$%", "[").replaceAll("%$!")),
+          selected
+        )
+      );
+    if (!selected.expected) {
+      error = "No output file found";
+    }
+    selected.expected = outputExpected;
+    return command;
+  }
 </script>
 
 <svelte:head><script src="coi-serviceworker.min.js"></script></svelte:head>
@@ -670,31 +701,12 @@
                 if (e.target.disabled) {
                   return;
                 }
-                addFilesToConversion();
-                let expected =
-                  /\[OUTPUT=([^\]]+)\]/.test(selected.command) &&
-                  selected.command.match(/\[OUTPUT=([^\]]+)\]/)[1];
-                if (!expected && !selected.expected) {
-                  error = "No output file found";
-                }
-                outputExpected = selected.expected || {
-                  extension: expected,
-                  name: `output.${expected}`,
-                  // TODO: Better mimeType handling
-                  mimeType:
-                    (["gif", "png", "jpeg", "tiff"].includes(expected)
-                      ? "image"
-                      : "video") +
-                    "/" +
-                    expected,
-                };
+                await addFilesToConversion();
                 // conversion_opts should have an array of {}.files[{name, data: Uint8Array}]
                 let msg = {
                   type: "command",
                   arguments: parseArguments(
-                    selected.command
-                      .replace("[INPUT]", "input." + getExtension(output.type))
-                      .replace(/\[PROMPT=([^\]]+)\]/, (_, p) => prompt(p))
+                    replaceCommand(selected.command, selected)
                   ),
                   ...conversion_opts,
                 };
@@ -1006,6 +1018,7 @@
     max-width: 400px;
     overflow-y: scroll;
     max-height: 80vh;
+    justify-content: flex-start !important;
 
     &.conversion:not(.error) {
       max-width: 600px;
@@ -1173,5 +1186,33 @@
     &[open] summary {
       border-bottom-color: #ccc;
     }
+  }
+  details {
+    input {
+      width: 100%;
+    }
+    b {
+      display: block;
+      margin: 10px 0;
+      font-size: 1.1rem;
+      font-weight: 200;
+    }
+  }
+  .resolution {
+    display: flex;
+    width: 100%;
+    align-items: center;
+    justify-content: center;
+    input {
+      max-width: 50px;
+      margin: 0 5px;
+    }
+  }
+  details[open] summary {
+    margin-bottom: 10px !important;
+  }
+  details summary {
+    display: flex;
+    align-items: center;
   }
 </style>
