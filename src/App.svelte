@@ -44,7 +44,8 @@
     conversionSelect,
     workerLoaded = false,
     workerLoading = false,
-    conversionProgress;
+    conversionProgress,
+    videoStartWhen = "immediately";
 
   //MediaRecorder
   let recorder;
@@ -102,7 +103,7 @@
     {
       label: "Convert to sped up GIF",
       // 0.3 -> 3x
-      command: `-loglevel debug -an -itsscale 0.3 -i [INPUT] -vf "fps=30,scale=720:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse" -loop 0 output.gif`,
+      command: `-an -itsscale [PROMPT=What speed? (0.3 = 3x sped up, 0.5 = 2x sped up, 1 = 1x, 2 = 0.5x slowed)] -i [INPUT] -vf "fps=30,scale=1280:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse" -loop 0 output.gif`,
       expected: {
         mimeType: "image/gif",
         name: "output.gif",
@@ -263,8 +264,9 @@
       // TODO: Make alterVid merge both
       let merged = await alterVid({
         track: videoStreams[0].getVideoTracks()[0],
-        maxWidth: videoConstraints.width,
+        maxWidth: videoConstraints.width || 1280,
       });
+      console.log(merged);
       alteredVid = merged;
       videoStream = new MediaStream(merged.stream);
       videoStream.getTracks().forEach((track) => {
@@ -332,7 +334,29 @@
       getConstraints,
       alterVid,
     });
-    recorder.start();
+
+    switch (videoStartWhen) {
+      case "immediately":
+        recorder.start();
+        break;
+      case "delay":
+        notifs.show("Starting recording in 5 seconds", { timeout: 4000 });
+        setTimeout(() => recorder.start(), 5000);
+        break;
+      case "blur":
+        notifs.show("Ready to start recording when you leave this page");
+        const handle = () => {
+          recorder.start();
+          window.removeEventListener("blur", handle);
+        };
+        window.addEventListener("blur", handle);
+        break;
+      default:
+        console.error("Method not found: ", videoStartWhen);
+        recorder.start();
+        break;
+    }
+
     recorder.onstart = () => {
       console.log("Started recording");
     };
@@ -481,10 +505,27 @@
   function getConstraints(a) {
     let out = {};
     if (a.video === true) {
-      out.video = videoConstraints;
+      out.video = {
+        width: 1280,
+        height: 720,
+        frameRate: { ideal: 30 },
+        ...videoConstraints,
+      };
+      out.video.width = parseInt(out.video.width, 10);
+      out.video.height = parseInt(out.video.height, 10);
+      out.video.frameRate.ideal = parseInt(out.video.frameRate.ideal, 10);
     }
     if (a.audio === true) {
-      out.audio = audioConstraints;
+      out.audio = {
+        autoGainControl: false,
+        echoCancellation: false,
+        noiseSuppression: false,
+        ...audioConstraints,
+      };
+      out.audio.autoGainControl = !!out.audio.autoGainControl;
+      out.audio.echoCancellation = !!out.audio.echoCancellation;
+      out.audio.noiseSuppression = !!out.audio.noiseSuppression;
+      out.audio.autoGainControl = !!out.audio.autoGainControl;
     }
     return out;
   }
@@ -657,6 +698,7 @@
                   ),
                   ...conversion_opts,
                 };
+                console.log(msg);
                 converting = true;
                 conversionDone = false;
                 window.ffmpeg.setProgress(({ ratio }) => {
@@ -678,6 +720,9 @@
                   window.ffmpeg.FS("writeFile", file.name, file.data);
                 }
                 await window.ffmpeg.run(...msg.arguments);
+                for (let file of msg.files) {
+                  window.ffmpeg.FS("unlink", file.name, file.data);
+                }
                 conversionDone = true;
                 converting = false;
                 conversionOutputFile = new Blob(
@@ -865,12 +910,44 @@
             <option value="camera">Webcam</option>
             <option value="mix">Overlay webcam on screen</option>
           </select>
+          <details>
+            <summary>Additional video options</summary>
+            <b>Start recording when:</b>
+            <select bind:value={videoStartWhen}>
+              <option value="immediately">Immediately</option>
+              <option value="blur">When you leave this page</option>
+              <option value="delay">In 5 seconds</option>
+            </select>
+            <b>Video ideal resolution</b>
+            <div class="resolution">
+              <input
+                type="text"
+                bind:value={videoConstraints.width}
+                placeholder="Width"
+              />x<input
+                bind:value={videoConstraints.height}
+                placeholder="Height"
+                type="text"
+              />
+            </div>
+            <b>Ideal video framerate</b>
+            <input type="text" bind:value={videoConstraints.frameRate.ideal} />
+          </details>
           <h2>Audio device</h2>
           <select bind:value={audioSelect}>
             <option value="system">System audio</option>
             <option value="microphone">Mic audio</option>
             <option value="both">Both system and mic</option>
           </select>
+          <details>
+            <summary>Additional audio options</summary>
+            <!-- prettier-ignore -->
+            <label><input bind:checked={audioConstraints.autoGainControl} type="checkbox"> Auto gain control</label>
+            <!-- prettier-ignore -->
+            <label><input bind:checked={audioConstraints.echoCancellation} type="checkbox"> Echo cancellation</label>
+            <!-- prettier-ignore -->
+            <label><input bind:checked={audioConstraints.noiseSuppression} type="checkbox"> Noise supression</label>
+          </details>
           <h2>Output format</h2>
           <select bind:value={mime}>
             {#each Object.keys(MIME_TYPES).filter( (i) => MediaRecorder.isTypeSupported(i) ) as type}
@@ -927,9 +1004,11 @@
     display: flex;
     width: 80vw;
     max-width: 400px;
+    overflow-y: scroll;
+    max-height: 80vh;
+
     &.conversion:not(.error) {
       max-width: 600px;
-      overflow-y: scroll;
       padding-top: 0px !important;
       position: relative;
       h2 {
@@ -939,34 +1018,6 @@
         width: 100%;
         background: white;
         padding: 10px 0;
-      }
-      details {
-        border: 1px dashed #ccc;
-        padding: 0.5em 0.5em 0;
-        border-radius: 5px;
-        margin-bottom: 5px;
-        summary {
-          list-style: none;
-          font-weight: bold;
-          margin: -0.5em -0.5em 0;
-          padding: 0.5em;
-          cursor: pointer;
-          border: 1px solid transparent;
-          transition: border-bottom-color 0.3s ease;
-          &::before {
-            content: "➜";
-            margin-right: 6px;
-            color: #999;
-            transition: transform 0.3s ease;
-            display: inline-block;
-          }
-          &:is([open] summary)::before {
-            transform: rotate(90deg);
-          }
-        }
-        &[open] summary {
-          border-bottom-color: #ccc;
-        }
       }
       img,
       video {
@@ -1090,6 +1141,34 @@
         background: #333;
         color: #fff;
       }
+    }
+  }
+  details {
+    border: 1px dashed #ccc;
+    padding: 0.5em 0.5em 0;
+    border-radius: 5px;
+    margin-bottom: 5px;
+    summary {
+      list-style: none;
+      font-weight: bold;
+      margin: -0.5em -0.5em 0;
+      padding: 0.5em;
+      cursor: pointer;
+      border: 1px solid transparent;
+      transition: border-bottom-color 0.3s ease;
+      &::before {
+        content: "➜";
+        margin-right: 6px;
+        color: #999;
+        transition: transform 0.3s ease;
+        display: inline-block;
+      }
+      &:is([open] summary)::before {
+        transform: rotate(90deg);
+      }
+    }
+    &[open] summary {
+      border-bottom-color: #ccc;
     }
   }
 </style>
