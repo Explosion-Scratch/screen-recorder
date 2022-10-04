@@ -4,6 +4,7 @@
   import ToastContainer from "./ToastContainer.svelte";
   import alterVid from "./canvasVid.js";
   import { onMount } from "svelte";
+  import { createFFmpeg, fetchFile } from "@ffmpeg/ffmpeg/dist/ffmpeg.min.js";
 
   //Streams
   let videoStream,
@@ -42,7 +43,8 @@
     conversionOutputFile,
     conversionSelect,
     workerLoaded = false,
-    workerLoading = false;
+    workerLoading = false,
+    conversionProgress;
 
   //MediaRecorder
   let recorder;
@@ -99,7 +101,7 @@
     },
     {
       label: "Convert to MP4",
-      command: `-t 3 -i input.webm -vf showinfo -strict -2 -c:v libx264 output.mp4`,
+      command: `-i [INPUT] output.mp4`,
       expected: {
         mimeType: "video/mp4",
         name: "output.mp4",
@@ -123,6 +125,9 @@
         return label;
       },
     });
+    if (window.SharedArrayBuffer) {
+      loadWorker();
+    }
   });
 
   async function startRecording() {
@@ -355,7 +360,6 @@
           .then((b) => {
             output = b;
             done = true;
-            loadWorker();
             making_seekable = false;
             notifs.show("Made video seekable!");
           })
@@ -370,7 +374,6 @@
         }, 5000);
         function err() {
           done = true;
-          loadWorker();
           output = blob;
           notifs.show(
             "Error making video seekable, reverting to non-seekable version",
@@ -380,7 +383,6 @@
       } else {
         output = blob;
         done = true;
-        loadWorker();
       }
     };
     recorder.addEventListener("dataavailable", () => {
@@ -425,44 +427,22 @@
     }
     workerLoading = true;
     workerLoaded = false;
-    worker = new Worker("worker.js");
-    worker.onmessage = function (event) {
-      var message = event.data;
-      if (message.type == "ready") {
-        workerLoaded = true;
-        workerLoading = false;
-        console.log("Loaded worker");
-        notifs.show("File conversion web worker ready");
-      } else if (message.type === "loaded") {
-        notifs.show("Worker loaded");
-      } else if (message.type == "stdout") {
-        console.log(message.data);
-        if (conversionOutput === "Starting conversion...") {
-          conversionOutput = "";
-        }
-        conversionOutput = `${conversionOutput.trim()}\n${message.data}\n\n`;
-        document.querySelector("pre.conversion_output").scrollBy(0, 10000);
-      } else if (message.type == "start") {
-        conversionOutput = "Starting conversion...";
-        console.log("Worker got command");
-      } else if (message.type === "done") {
-        try {
-          conversionDone = true;
-          converting = false;
-          console.log(message);
-          if (!message?.data?.[0]?.data) {
-            return console.log("There was prob an error", message);
-          }
-          conversionOutputFile = new Blob([message.data[0].data], {
-            type: outputExpected.mimeType,
-          });
-          outputExpected.name = message.data[0].name;
-        } catch (e) {
-          console.error(e);
-          error = e.message;
-        }
-      }
-    };
+    let ffmpeg = createFFmpeg({
+      log: true,
+    });
+    window.ffmpeg = ffmpeg;
+    if (ffmpeg.isLoaded()) {
+      workerLoaded = true;
+      workerLoading = false;
+      return;
+    }
+    notifs.show("Loading ffmpeg...");
+    ffmpeg.load().then(() => {
+      notifs.show("ffmpeg loaded");
+      workerLoaded = true;
+      workerLoading = false;
+      console.log("FFmpeg loaded", ffmpeg);
+    });
   }
   async function fixBlob(blob) {
     const { Decoder, tools, Reader } = ebml;
@@ -559,7 +539,6 @@
         ],
       };
       conversionScreen = true;
-      loadWorker();
       done = false;
       console.log("Added files, ready for conversion now: ", conversion_opts);
     } catch (e) {
@@ -568,6 +547,8 @@
     }
   }
 </script>
+
+<svelte:head><script src="coi-serviceworker.min.js"></script></svelte:head>
 
 <!-- BEGIN_HTML -->
 <ToastContainer />
@@ -632,7 +613,7 @@
         {#if !conversionDone}
           <div class="buttons">
             <button
-              on:click={(e) => {
+              on:click={async (e) => {
                 let selected =
                   CONVERSIONS[conversionSelect.replace("opt_", "")];
                 if (e.target.disabled) {
@@ -656,6 +637,7 @@
                     "/" +
                     expected,
                 };
+                // conversion_opts should have an array of {}.files[{name, data: Uint8Array}]
                 let msg = {
                   type: "command",
                   arguments: parseArguments(
@@ -665,14 +647,44 @@
                   ),
                   ...conversion_opts,
                 };
-                console.log("Sending message: ", { msg });
-                worker.postMessage(msg);
                 converting = true;
+                conversionDone = false;
+                window.ffmpeg.setProgress(({ ratio }) => {
+                  if (ratio <= 0.00000001) {
+                    return (conversionProgress = null);
+                  }
+                  conversionProgress = `${(ratio * 100).toFixed(3)}%`;
+                });
+                window.ffmpeg.setLogger(({ message }) => {
+                  conversionOutput = `${conversionOutput.trim()}\n${message}\n\n`;
+                  document
+                    .querySelector("pre.conversion_output")
+                    ?.scrollBy(0, 1000);
+                });
+                conversionOutput = "Uploading files to WebAssembly worker...";
+                for (let file of msg.files) {
+                  window.ffmpeg.FS("writeFile", file.name, file.data);
+                }
+                await window.ffmpeg.run(...msg.arguments);
+                conversionDone = true;
+                converting = false;
+                conversionOutputFile = new Blob(
+                  [window.ffmpeg.FS("readFile", outputExpected.name).buffer],
+                  {
+                    type: outputExpected.mimeType,
+                  }
+                );
               }}
               disabled={converting || !workerLoaded}
-              >{#if !workerLoaded}Loading converter...{:else if converting}Converting...{:else}Start
-                converting{/if}</button
             >
+              {#if !workerLoaded}
+                Loading converter...
+              {:else if converting}
+                Converting{#if conversionProgress}&nbsp;&nbsp;({conversionProgress}){:else}...{/if}
+              {:else}
+                Start converting
+              {/if}
+            </button>
           </div>
         {/if}
         {#if converting && !conversionDone}
