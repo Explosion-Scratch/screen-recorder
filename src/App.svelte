@@ -1019,6 +1019,9 @@
         background: white;
         padding: 10px 0;
       }
+      details {
+        margin-top: 20px;
+      }
       img,
       video {
         border-radius: 5px;
