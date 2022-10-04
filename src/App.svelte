@@ -39,7 +39,9 @@
       mimeType: "image/gif",
       extension: "gif",
     },
-    conversionOutputFile;
+    conversionOutputFile,
+    conversionSelect,
+    workerLoaded = false;
 
   //MediaRecorder
   let recorder;
@@ -88,37 +90,28 @@
     "video/x-msvideo": "avi",
     "video/x-ms-wmv": "wmv",
   };
-
+  const CONVERSIONS = [
+    {
+      label: "Convert to GIF",
+      command: "-t 5 -i [INPUT] -vf showinfo -strict -2 output.gif",
+      expected: { mimeType: "image/gif", name: "output.gif", extension: "gif" },
+    },
+    {
+      label: "Convert to MP4",
+      command: `-t 3 -i input.webm -vf showinfo -strict -2 -c:v libx264 output.mp4`,
+      expected: {
+        mimeType: "video/mp4",
+        name: "output.mp4",
+        extension: "mp4",
+      },
+    },
+    {
+      label: "Custom FFMPEG Command",
+      command:
+        "[PROMPT=What command would you like to run? (Use '[INPUT]' for the input file and '[OUTPUT=extension]') for output files.",
+    },
+  ];
   onMount(() => {
-    worker = new Worker("worker.js");
-    worker.onmessage = function (event) {
-      var message = event.data;
-      if (message.type == "ready") {
-        console.log("Loaded worker");
-        notifs.show("File conversion web worker ready");
-      } else if (message.type === "loaded") {
-        notifs.show("Worker loaded");
-      } else if (message.type == "stdout") {
-        console.log(message.data);
-        if (conversionOutput === "Starting conversion...") {
-          conversionOutput = "";
-        }
-        conversionOutput = `${conversionOutput.trim()}\n${message.data}\n\n`;
-        document.querySelector("pre.conversion_output").scrollBy(0, 10000);
-      } else if (message.type == "start") {
-        conversionOutput = "Starting conversion...";
-        console.log("Worker got command");
-      } else if (message.type === "done") {
-        conversionDone = true;
-        converting = false;
-        console.log(message);
-        conversionOutputFile = new Blob([message.data[0].data], {
-          type: outputExpected.mimeType,
-        });
-        outputExpected.name = message.data[0].name;
-      }
-    };
-
     const CUSTOM_LABELS = {};
     Object.defineProperty(MediaStreamTrack.prototype, "lbl", {
       get() {
@@ -293,6 +286,7 @@
     });
     Object.assign(window, {
       recorder,
+      conversionSelect,
       videoStream,
       audioStream,
       combinedStream,
@@ -322,9 +316,7 @@
       getConstraints,
       alterVid,
     });
-    setTimeout(() => {
-      recorder.start();
-    });
+    recorder.start();
     recorder.onstart = () => {
       console.log("Started recording");
     };
@@ -362,6 +354,7 @@
           .then((b) => {
             output = b;
             done = true;
+            loadWorker();
             making_seekable = false;
             notifs.show("Made video seekable!");
           })
@@ -376,6 +369,7 @@
         }, 5000);
         function err() {
           done = true;
+          loadWorker();
           output = blob;
           notifs.show(
             "Error making video seekable, reverting to non-seekable version",
@@ -385,6 +379,7 @@
       } else {
         output = blob;
         done = true;
+        loadWorker();
       }
     };
     recorder.addEventListener("dataavailable", () => {
@@ -422,6 +417,46 @@
     }
     tracks = tracks.filter((i) => i !== track);
     combinedStream.removeTrack(track);
+  }
+  function loadWorker() {
+    if (workerLoaded) {
+      return;
+    }
+    workerLoaded = false;
+    worker = new Worker("worker.js");
+    worker.onmessage = function (event) {
+      var message = event.data;
+      if (message.type == "ready") {
+        workerLoaded = true;
+        console.log("Loaded worker");
+        notifs.show("File conversion web worker ready");
+      } else if (message.type === "loaded") {
+        notifs.show("Worker loaded");
+      } else if (message.type == "stdout") {
+        console.log(message.data);
+        if (conversionOutput === "Starting conversion...") {
+          conversionOutput = "";
+        }
+        conversionOutput = `${conversionOutput.trim()}\n${message.data}\n\n`;
+        document.querySelector("pre.conversion_output").scrollBy(0, 10000);
+      } else if (message.type == "start") {
+        conversionOutput = "Starting conversion...";
+        console.log("Worker got command");
+      } else if (message.type === "done") {
+        try {
+          conversionDone = true;
+          converting = false;
+          console.log(message);
+          conversionOutputFile = new Blob([message.data[0].data], {
+            type: outputExpected.mimeType,
+          });
+          outputExpected.name = message.data[0].name;
+        } catch (e) {
+          console.error(e);
+          error = e.message;
+        }
+      }
+    };
   }
   async function fixBlob(blob) {
     const { Decoder, tools, Reader } = ebml;
@@ -468,6 +503,20 @@
     a.click();
     window.URL.revokeObjectURL(url);
   }
+  function parseArguments(text) {
+    text = text.replace(/\s+/g, " ");
+    var args = [];
+    // Allow double quotes to not split args.
+    text.split('"').forEach(function (t, i) {
+      t = t.trim();
+      if (i % 2 === 1) {
+        args.push(t);
+      } else {
+        args = args.concat(t.split(" "));
+      }
+    });
+    return args;
+  }
   function readAsArrayBuffer(blob) {
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
@@ -490,21 +539,27 @@
     }
   }
   function getExtension(type) {
-    return MIME_TYPES[type] || type.split("/")[0];
+    return MIME_TYPES[type] || type.split("/")[1];
   }
   async function addFilesToConversion() {
-    console.log(output);
-    conversion_opts = {
-      files: [
-        {
-          name: "input.webm",
-          data: new Uint8Array(await readAsArrayBuffer(output)),
-        },
-      ],
-    };
-    conversionScreen = true;
-    done = false;
-    console.log("Added files, ready for conversion now: ", conversion_opts);
+    try {
+      console.log(output);
+      conversion_opts = {
+        files: [
+          {
+            name: "input." + getExtension(output.type),
+            data: new Uint8Array(await readAsArrayBuffer(output)),
+          },
+        ],
+      };
+      conversionScreen = true;
+      loadWorker();
+      done = false;
+      console.log("Added files, ready for conversion now: ", conversion_opts);
+    } catch (e) {
+      console.error(e);
+      error = e;
+    }
   }
 </script>
 
@@ -525,6 +580,18 @@
       >
       <div class="buttons">
         <button on:click={() => location.reload()}>Reload page</button>
+        {#if output}
+          <button
+            on:click={() =>
+              saveBlob(output, "Screen Recording." + getExtension(output.type))}
+            >Download screen recording</button
+          >
+        {/if}
+        {#if conversionOutputFile}
+          <button on:click={() => saveBlob(output, outputExpected.name)}
+            >Download converted file</button
+          >
+        {/if}
       </div>
     {:else if done}
       <h2>Done!</h2>
@@ -539,48 +606,64 @@
       <div class="buttons">
         <button
           on:click={() =>
-            saveBlob(output, "Screen Recording." + output.type.split("/")[1])}
+            saveBlob(output, "Screen Recording." + getExtension(output.type))}
           >Download</button
         >
+        <!-- TODO: Don't reload for re-record -->
         <button on:click={() => location.reload()}>Re-record</button>
         <button on:click={() => addFilesToConversion()}>Convert</button>
       </div>
     {:else if conversionScreen}
       <div class="buttons">
         <h2>Convert video file</h2>
+        {#if !conversionDone && !converting}
+          <select bind:value={conversionSelect}>
+            {#each CONVERSIONS as conversion, i}
+              <option value="opt_{i}">{conversion.label}</option>
+            {/each}
+          </select>
+        {/if}
         {#if !conversionDone}
           <div class="buttons">
-            <!-- TODO: Let user choose what -->
             <button
               on:click={(e) => {
+                let selected =
+                  CONVERSIONS[conversionSelect.replace("opt_", "")];
                 if (e.target.disabled) {
                   return;
                 }
                 addFilesToConversion();
-                outputExpected = {
-                  mimeType: "image/gif",
-                  name: "output.gif",
-                  extension: "gif",
+                let expected =
+                  /\[OUTPUT=([^\]]+)\]/.test(selected.command) &&
+                  selected.command.match(/\[OUTPUT=([^\]]+)\]/)[1];
+                if (!expected && !selected.expected) {
+                  error = "No output file found";
+                }
+                outputExpected = selected.expected || {
+                  extension: expected,
+                  name: `output.${expected}`,
+                  // TODO: Better mimeType handling
+                  mimeType:
+                    (["gif", "png", "jpeg", "tiff"].includes(extension)
+                      ? "image"
+                      : "video") +
+                    "/" +
+                    extension,
                 };
                 worker.postMessage({
                   type: "command",
-                  arguments: [
-                    "-t",
-                    "5",
-                    "-i",
-                    "input.webm",
-                    "-vf",
-                    "showinfo",
-                    "-strict",
-                    "-2",
-                    "output.gif",
-                  ],
+                  arguments: parseArguments(
+                    selected.command
+                      .replace("[INPUT]", "input." + getExtension(output.type))
+                      .replace(/\[PROMPT=([^\]]+)\]/, (_, p) => prompt(p))
+                  ),
                   ...conversion_opts,
                 });
                 converting = true;
               }}
-              disabled={converting}
-              >{#if converting}Converting...{:else}Start converting{/if}</button
+              disabled={converting || !workerLoaded}
+              >{#if !workerLoaded}Loading converter...{:else if converting}Converting...{:else}Start
+                converting{/if}</button
             >
           </div>
         {/if}
@@ -812,8 +895,53 @@
     display: flex;
     width: 80vw;
     max-width: 400px;
-    &.conversion {
+    &.conversion:not(.error) {
       max-width: 600px;
+      overflow-y: scroll;
+      padding-top: 0px !important;
+      position: relative;
+      h2 {
+        margin-top: 0 !important;
+        position: sticky;
+        top: -1px;
+        width: 100%;
+        background: white;
+        padding: 10px 0;
+      }
+      details {
+        border: 1px dashed #ccc;
+        padding: 0.5em 0.5em 0;
+        border-radius: 5px;
+        margin-bottom: 5px;
+        summary {
+          list-style: none;
+          font-weight: bold;
+          margin: -0.5em -0.5em 0;
+          padding: 0.5em;
+          cursor: pointer;
+          border: 1px solid transparent;
+          transition: border-bottom-color 0.3s ease;
+          &::before {
+            content: "➜";
+            margin-right: 6px;
+            color: #999;
+            transition: transform 0.3s ease;
+            display: inline-block;
+          }
+          &:is([open] summary)::before {
+            transform: rotate(90deg);
+          }
+        }
+        &[open] summary {
+          border-bottom-color: #ccc;
+        }
+      }
+      img,
+      video {
+        border-radius: 5px;
+        box-shadow: rgba(50, 50, 93, 0.25) 0px 2px 5px -1px,
+          rgba(0, 0, 0, 0.3) 0px 1px 3px -1px;
+      }
     }
     margin: 0 auto;
     border: 1px dashed #ccc;
