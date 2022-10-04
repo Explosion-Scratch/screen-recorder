@@ -41,7 +41,8 @@
     },
     conversionOutputFile,
     conversionSelect,
-    workerLoaded = false;
+    workerLoaded = false,
+    workerLoading = false;
 
   //MediaRecorder
   let recorder;
@@ -419,15 +420,17 @@
     combinedStream.removeTrack(track);
   }
   function loadWorker() {
-    if (workerLoaded) {
+    if (workerLoaded || workerLoading) {
       return;
     }
+    workerLoading = true;
     workerLoaded = false;
     worker = new Worker("worker.js");
     worker.onmessage = function (event) {
       var message = event.data;
       if (message.type == "ready") {
         workerLoaded = true;
+        workerLoading = false;
         console.log("Loaded worker");
         notifs.show("File conversion web worker ready");
       } else if (message.type === "loaded") {
@@ -447,6 +450,9 @@
           conversionDone = true;
           converting = false;
           console.log(message);
+          if (!message?.data?.[0]?.data) {
+            return console.log("There was prob an error", message);
+          }
           conversionOutputFile = new Blob([message.data[0].data], {
             type: outputExpected.mimeType,
           });
@@ -644,13 +650,13 @@
                   name: `output.${expected}`,
                   // TODO: Better mimeType handling
                   mimeType:
-                    (["gif", "png", "jpeg", "tiff"].includes(extension)
+                    (["gif", "png", "jpeg", "tiff"].includes(expected)
                       ? "image"
                       : "video") +
                     "/" +
-                    extension,
+                    expected,
                 };
-                worker.postMessage({
+                let msg = {
                   type: "command",
                   arguments: parseArguments(
                     selected.command
@@ -658,7 +664,9 @@
                       .replace(/\[PROMPT=([^\]]+)\]/, (_, p) => prompt(p))
                   ),
                   ...conversion_opts,
-                });
+                };
+                console.log("Sending message: ", { msg });
+                worker.postMessage(msg);
                 converting = true;
               }}
               disabled={converting || !workerLoaded}
