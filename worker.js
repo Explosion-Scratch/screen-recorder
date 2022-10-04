@@ -1,5 +1,5 @@
 importScripts(
-  "https://rawcdn.githack.com/bgrins/videoconverter.js/42def8c4136b03cbe55951fbf6fcda214f51059a/build/ffmpeg.js"
+  "https://rawcdn.githack.com/bgrins/videoconverter.js/42def8c4136b03cbe55951fbf6fcda214f51059a/build/ffmpeg-all-codecs.js"
 );
 
 function print(text) {
