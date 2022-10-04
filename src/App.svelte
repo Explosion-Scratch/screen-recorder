@@ -100,6 +100,16 @@
       expected: { mimeType: "image/gif", name: "output.gif", extension: "gif" },
     },
     {
+      label: "Convert to sped up GIF",
+      // 0.3 -> 3x
+      command: `-loglevel debug -an -itsscale 0.3 -i [INPUT] -vf "fps=30,scale=720:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse" -loop 0 output.gif`,
+      expected: {
+        mimeType: "image/gif",
+        name: "output.gif",
+        extension: "gif",
+      },
+    },
+    {
       label: "Convert to MP4",
       command: `-loglevel debug -i [INPUT] -c copy -strict experimental output.mp4`,
       expected: {
@@ -657,10 +667,12 @@
                 });
                 window.ffmpeg.setLogger(({ message }) => {
                   conversionOutput = `${conversionOutput.trim()}\n${message}\n\n`;
+                });
+                setInterval(() => {
                   document
                     .querySelector("pre.conversion_output")
                     ?.scrollBy(0, 1000);
-                });
+                }, 100);
                 conversionOutput = "Uploading files to WebAssembly worker...";
                 for (let file of msg.files) {
                   window.ffmpeg.FS("writeFile", file.name, file.data);
