@@ -101,7 +101,7 @@
     },
     {
       label: "Convert to MP4",
-      command: `-i [INPUT] output.mp4`,
+      command: `-loglevel debug -i [INPUT] -c copy -strict experimental output.mp4`,
       expected: {
         mimeType: "video/mp4",
         name: "output.mp4",
