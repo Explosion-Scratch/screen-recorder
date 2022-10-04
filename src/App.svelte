@@ -1,5 +1,9 @@
 <script>
   import * as ebml from "./ts-ebml.min.js";
+  import notifs from "./notifs.js";
+  import ToastContainer from "./ToastContainer.svelte";
+  import alterVid from "./canvasVid.js";
+  import { onMount } from "svelte";
 
   //Streams
   let videoStream,
@@ -12,14 +16,67 @@
     done = false,
     output,
     error = false,
-    mime;
+    mime,
+    alteredVid,
+    videoConstraints = {
+      width: 1280,
+      height: 720,
+      frameRate: { ideal: 30 },
+    },
+    audioConstraints = {
+      autoGainControl: false,
+      echoCancellation: false,
+      noiseSuppression: false,
+    },
+    converting = false,
+    conversionOutput = "Starting conversion...",
+    conversionScreen = false,
+    conversionDone = false,
+    worker,
+    conversion_opts,
+    outputExpected = {
+      name: "output.gif",
+      mimeType: "image/gif",
+      extension: "gif",
+    },
+    conversionOutputFile,
+    conversionSelect,
+    workerLoaded = false,
+    workerLoading = false;
+
   //MediaRecorder
   let recorder;
   //Selects
   let videoSelect = "screen",
     audioSelect = "system";
   let recording = false;
-
+  $: {
+    // This is bad JavaScript kids, don't try this at home
+    document.title = error
+      ? "Error!"
+      : recording
+      ? "Recording..."
+      : converting
+      ? "Converting"
+      : done
+      ? "Done!"
+      : "Screen Recorder";
+  }
+  $: {
+    let emoji = error
+      ? "✋"
+      : recording
+      ? "⭕"
+      : converting
+      ? "📂"
+      : done
+      ? "✔️"
+      : "🎥";
+    document.querySelector("link[rel=icon]").href =
+      "data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%22256%22 height=%22256%22 viewBox=%220 0 100 100%22><rect width=%22100%22 height=%22100%22 rx=%2220%22 fill=%22%23f4f4f4%22></rect><text x=%2250%%22 y=%2250%%22 dominant-baseline=%22central%22 text-anchor=%22middle%22 font-size=%2270%22>" +
+      emoji +
+      "</text></svg>";
+  }
   const MIME_TYPES = {
     "video/webm;codecs=opus": "webm",
     "video/webm;codecs=vp8": "webm",
@@ -34,6 +91,39 @@
     "video/x-msvideo": "avi",
     "video/x-ms-wmv": "wmv",
   };
+  const CONVERSIONS = [
+    {
+      label: "Convert to GIF",
+      command: "-t 5 -i [INPUT] -vf showinfo -strict -2 output.gif",
+      expected: { mimeType: "image/gif", name: "output.gif", extension: "gif" },
+    },
+    {
+      label: "Convert to MP4",
+      command: `-t 3 -i input.webm -vf showinfo -strict -2 -c:v libx264 output.mp4`,
+      expected: {
+        mimeType: "video/mp4",
+        name: "output.mp4",
+        extension: "mp4",
+      },
+    },
+    {
+      label: "Custom FFMPEG Command",
+      command:
+        "[PROMPT=What command would you like to run? (Use '[INPUT]' for the input file and '[OUTPUT=extension]') for output files.",
+    },
+  ];
+  onMount(() => {
+    const CUSTOM_LABELS = {};
+    Object.defineProperty(MediaStreamTrack.prototype, "lbl", {
+      get() {
+        return CUSTOM_LABELS[this.id] || this.label;
+      },
+      set(label) {
+        CUSTOM_LABELS[this.id] = label;
+        return label;
+      },
+    });
+  });
 
   async function startRecording() {
     error = false;
@@ -47,6 +137,10 @@
       video: false,
       audio: false,
     };
+    if (videoSelect === "mix") {
+      external.video = true;
+      screen.video = true;
+    }
     if (videoSelect === "screen") {
       screen.video = true;
     }
@@ -64,38 +158,61 @@
       screen.audio = true;
     }
     let audioStreams = [];
+    let videoStreams = [];
 
     if (external.audio || external.video) {
       console.log("Getting from external", external);
-      let _stream = await navigator.mediaDevices.getUserMedia(external);
+      let _stream = await navigator.mediaDevices.getUserMedia(
+        getConstraints(external)
+      );
       tracks = [...tracks, ..._stream.getTracks()];
+      _stream.getTracks().forEach((track) => {
+        track.lbl = `External ${
+          track.kind === "audio" ? "microphone" : "camera"
+        }`;
+      });
       console.log("Got stream");
       if (external.audio) {
         audioStreams.push(_stream);
       }
       if (external.video) {
-        let tracks = _stream.getVideoTracks();
-        if (!tracks.length) {
-          throw new Error("No video stream found");
-        }
-        videoStream = new MediaStream(tracks);
+        videoStreams.push(_stream);
       }
+      notifs.show(
+        `Got ${
+          external.audio && external.video
+            ? "video and audio"
+            : external.audio
+            ? "audio"
+            : "video"
+        } stream from external device`
+      );
     }
     if (screen.audio || screen.video) {
       console.log("Getting from screen", screen);
-      let _stream = await navigator.mediaDevices.getDisplayMedia(screen);
+      let _stream = await navigator.mediaDevices.getDisplayMedia(
+        getConstraints(screen)
+      );
       tracks = [...tracks, ..._stream.getTracks()];
+      _stream.getTracks().forEach((track) => {
+        track.lbl = `System ${track.kind === "audio" ? "audio" : "screen"}`;
+      });
       console.log("Got stream");
       if (screen.audio) {
         audioStreams.push(_stream);
       }
       if (screen.video) {
-        let tracks = _stream.getVideoTracks();
-        if (!tracks.length) {
-          throw new Error("No video stream found");
-        }
-        videoStream = new MediaStream(tracks);
+        videoStreams.push(_stream);
       }
+      notifs.show(
+        `Got ${
+          screen.audio && screen.video
+            ? "video and audio"
+            : screen.audio
+            ? "audio"
+            : "video"
+        } stream from screen share`
+      );
     }
 
     if (audioSelect === "both") {
@@ -107,11 +224,48 @@
       let merged = mergeStreams(audioStreams[0], audioStreams[1]);
       console.log(merged);
       audioStream = new MediaStream(merged);
+      audioStream.getTracks().forEach((track) => {
+        track.lbl = `${track.kind[0].toUpperCase()}${track.kind.slice(
+          1
+        )} merged audio stream`;
+      });
+      notifs.show("Merged system and microphone audio");
     } else {
       if (audioStreams.length !== 1) {
-        throw new Error("You shouldn't see this error");
+        console.debug({ audioStreams });
+        throw new Error(
+          "Expected 1 audio track but found " + audioStreams.length
+        );
       }
       audioStream = new MediaStream(audioStreams[0]);
+    }
+    if (videoSelect === "mix") {
+      if (videoStreams.length !== 2) {
+        throw new Error(
+          "Expected both webcam and screen video tracks to merge"
+        );
+      }
+      // TODO: Make alterVid merge both
+      let merged = await alterVid({
+        track: videoStreams[0].getVideoTracks()[0],
+        maxWidth: videoConstraints.width,
+      });
+      alteredVid = merged;
+      videoStream = new MediaStream(merged.stream);
+      videoStream.getTracks().forEach((track) => {
+        track.lbl = `${track.kind[0].toUpperCase()}${track.kind.slice(
+          1
+        )} from merged video stream`;
+      });
+      notifs.show("Merged webcam and system video");
+    } else {
+      if (videoStreams.length !== 1) {
+        console.debug({ videoStreams });
+        throw new Error(
+          "Expected 1 video track but found " + videoStreams.length
+        );
+      }
+      videoStream = new MediaStream(videoStreams[0]);
     }
 
     combinedStream = new MediaStream([
@@ -133,6 +287,7 @@
     });
     Object.assign(window, {
       recorder,
+      conversionSelect,
       videoStream,
       audioStream,
       combinedStream,
@@ -143,10 +298,29 @@
       paused,
       recording,
       fixBlob,
+      done,
+      chunks,
+      output,
+      error,
+      mime,
+      alteredVid,
+      videoConstraints,
+      audioConstraints,
+      converting,
+      conversionOutput,
+      conversionScreen,
+      worker,
+      conversion_opts,
+      videoSelect,
+      audioSelect,
+      addFilesToConversion,
+      getConstraints,
+      alterVid,
     });
-    setTimeout(() => {
-      recorder.start();
-    });
+    recorder.start();
+    recorder.onstart = () => {
+      console.log("Started recording");
+    };
     recorder.ondataavailable = (e) => {
       chunks.push(e.data);
     };
@@ -163,16 +337,51 @@
   }
   function stopRecording() {
     tracks.forEach((track) => track.stop());
+    if (!recorder) {
+      return console.log("Couldn't find recorder, probably some other error");
+    }
     recorder.onstop = async () => {
+      if (alteredVid) {
+        alteredVid.stop();
+      }
+      notifs.show("Stopped recording");
       console.log(recorder.mimeType, mime);
       let blob = new Blob(chunks, { type: mime });
       if (mime.startsWith("video/webm")) {
+        notifs.show("Making video seekable...");
+        let making_seekable = true;
         // TODO: FixBlob can take a bit, give indication to user
-        output = await fixBlob(blob);
+        fixBlob(blob)
+          .then((b) => {
+            output = b;
+            done = true;
+            loadWorker();
+            making_seekable = false;
+            notifs.show("Made video seekable!");
+          })
+          .catch((e) => {
+            console.error(e);
+            err();
+          });
+        setTimeout(() => {
+          if (making_seekable) {
+            err();
+          }
+        }, 5000);
+        function err() {
+          done = true;
+          loadWorker();
+          output = blob;
+          notifs.show(
+            "Error making video seekable, reverting to non-seekable version",
+            { timeout: 5000 }
+          );
+        }
       } else {
         output = blob;
+        done = true;
+        loadWorker();
       }
-      done = true;
     };
     recorder.addEventListener("dataavailable", () => {
       //requestData needs to have state: recording
@@ -210,6 +419,51 @@
     tracks = tracks.filter((i) => i !== track);
     combinedStream.removeTrack(track);
   }
+  function loadWorker() {
+    if (workerLoaded || workerLoading) {
+      return;
+    }
+    workerLoading = true;
+    workerLoaded = false;
+    worker = new Worker("worker.js");
+    worker.onmessage = function (event) {
+      var message = event.data;
+      if (message.type == "ready") {
+        workerLoaded = true;
+        workerLoading = false;
+        console.log("Loaded worker");
+        notifs.show("File conversion web worker ready");
+      } else if (message.type === "loaded") {
+        notifs.show("Worker loaded");
+      } else if (message.type == "stdout") {
+        console.log(message.data);
+        if (conversionOutput === "Starting conversion...") {
+          conversionOutput = "";
+        }
+        conversionOutput = `${conversionOutput.trim()}\n${message.data}\n\n`;
+        document.querySelector("pre.conversion_output").scrollBy(0, 10000);
+      } else if (message.type == "start") {
+        conversionOutput = "Starting conversion...";
+        console.log("Worker got command");
+      } else if (message.type === "done") {
+        try {
+          conversionDone = true;
+          converting = false;
+          console.log(message);
+          if (!message?.data?.[0]?.data) {
+            return console.log("There was prob an error", message);
+          }
+          conversionOutputFile = new Blob([message.data[0].data], {
+            type: outputExpected.mimeType,
+          });
+          outputExpected.name = message.data[0].name;
+        } catch (e) {
+          console.error(e);
+          error = e.message;
+        }
+      }
+    };
+  }
   async function fixBlob(blob) {
     const { Decoder, tools, Reader } = ebml;
     const decoder = new Decoder();
@@ -234,6 +488,16 @@
     });
     return fixed;
   }
+  function getConstraints(a) {
+    let out = {};
+    if (a.video === true) {
+      out.video = videoConstraints;
+    }
+    if (a.audio === true) {
+      out.audio = audioConstraints;
+    }
+    return out;
+  }
   function saveBlob(blob, fileName) {
     var a = document.createElement("a");
     document.body.appendChild(a);
@@ -244,6 +508,20 @@
     a.download = fileName;
     a.click();
     window.URL.revokeObjectURL(url);
+  }
+  function parseArguments(text) {
+    text = text.replace(/\s+/g, " ");
+    var args = [];
+    // Allow double quotes to not split args.
+    text.split('"').forEach(function (t, i) {
+      t = t.trim();
+      if (i % 2 === 1) {
+        args.push(t);
+      } else {
+        args = args.concat(t.split(" "));
+      }
+    });
+    return args;
   }
   function readAsArrayBuffer(blob) {
     return new Promise((resolve, reject) => {
@@ -267,12 +545,39 @@
     }
   }
   function getExtension(type) {
-    return MIME_TYPES[type] || type.split("/")[0];
+    return MIME_TYPES[type] || type.split("/")[1];
+  }
+  async function addFilesToConversion() {
+    try {
+      console.log(output);
+      conversion_opts = {
+        files: [
+          {
+            name: "input." + getExtension(output.type),
+            data: new Uint8Array(await readAsArrayBuffer(output)),
+          },
+        ],
+      };
+      conversionScreen = true;
+      loadWorker();
+      done = false;
+      console.log("Added files, ready for conversion now: ", conversion_opts);
+    } catch (e) {
+      console.error(e);
+      error = e;
+    }
   }
 </script>
 
+<!-- BEGIN_HTML -->
+<ToastContainer />
 <div class="outer">
-  <div class="container" class:done class:error>
+  <div
+    class="container"
+    class:done
+    class:error
+    class:conversion={conversionScreen}
+  >
     {#if error}
       <span
         >There was an error: {typeof error === "string"
@@ -281,6 +586,18 @@
       >
       <div class="buttons">
         <button on:click={() => location.reload()}>Reload page</button>
+        {#if output}
+          <button
+            on:click={() =>
+              saveBlob(output, "Screen Recording." + getExtension(output.type))}
+            >Download screen recording</button
+          >
+        {/if}
+        {#if conversionOutputFile}
+          <button on:click={() => saveBlob(output, outputExpected.name)}
+            >Download converted file</button
+          >
+        {/if}
       </div>
     {:else if done}
       <h2>Done!</h2>
@@ -295,9 +612,119 @@
       <div class="buttons">
         <button
           on:click={() =>
-            saveBlob(output, "Screen Recording." + output.type.split("/")[1])}
+            saveBlob(output, "Screen Recording." + getExtension(output.type))}
           >Download</button
-        ><button on:click={() => location.reload()}>Re-record</button>
+        >
+        <!-- TODO: Don't reload for re-record -->
+        <button on:click={() => location.reload()}>Re-record</button>
+        <button on:click={() => addFilesToConversion()}>Convert</button>
+      </div>
+    {:else if conversionScreen}
+      <div class="buttons">
+        <h2>Convert video file</h2>
+        {#if !conversionDone && !converting}
+          <select bind:value={conversionSelect}>
+            {#each CONVERSIONS as conversion, i}
+              <option value="opt_{i}">{conversion.label}</option>
+            {/each}
+          </select>
+        {/if}
+        {#if !conversionDone}
+          <div class="buttons">
+            <button
+              on:click={(e) => {
+                let selected =
+                  CONVERSIONS[conversionSelect.replace("opt_", "")];
+                if (e.target.disabled) {
+                  return;
+                }
+                addFilesToConversion();
+                let expected =
+                  /\[OUTPUT=([^\]]+)\]/.test(selected.command) &&
+                  selected.command.match(/\[OUTPUT=([^\]]+)\]/)[1];
+                if (!expected && !selected.expected) {
+                  error = "No output file found";
+                }
+                outputExpected = selected.expected || {
+                  extension: expected,
+                  name: `output.${expected}`,
+                  // TODO: Better mimeType handling
+                  mimeType:
+                    (["gif", "png", "jpeg", "tiff"].includes(expected)
+                      ? "image"
+                      : "video") +
+                    "/" +
+                    expected,
+                };
+                let msg = {
+                  type: "command",
+                  arguments: parseArguments(
+                    selected.command
+                      .replace("[INPUT]", "input." + getExtension(output.type))
+                      .replace(/\[PROMPT=([^\]]+)\]/, (_, p) => prompt(p))
+                  ),
+                  ...conversion_opts,
+                };
+                console.log("Sending message: ", { msg });
+                worker.postMessage(msg);
+                converting = true;
+              }}
+              disabled={converting || !workerLoaded}
+              >{#if !workerLoaded}Loading converter...{:else if converting}Converting...{:else}Start
+                converting{/if}</button
+            >
+          </div>
+        {/if}
+        {#if converting && !conversionDone}
+          <pre class="conversion_output">{conversionOutput}</pre>
+        {/if}
+        {#if conversionDone}
+          <details class="conversion_logs">
+            <summary>Show logs</summary>
+            <pre class="conversion_output">{conversionOutput}</pre>
+          </details>
+        {/if}
+        {#if conversionDone}
+          {#if outputExpected.mimeType.startsWith("video/")}
+            <video
+              on:load={(e) => e.target.play()}
+              autoplay
+              playsinline
+              muted
+              controls
+              src={URL.createObjectURL(conversionOutputFile)}
+            />
+          {:else if outputExpected.mimeType.startsWith("image/")}
+            <img
+              src={URL.createObjectURL(conversionOutputFile)}
+              alt="Conversion output"
+            />
+          {/if}
+          <div class="buttons">
+            <button
+              on:click={() =>
+                saveBlob(conversionOutputFile, outputExpected.name)}
+              >Download</button
+            >
+            <button
+              on:click={() =>
+                saveBlob(
+                  output,
+                  "Screen Recording." + getExtension(output.type)
+                )}>Download original</button
+            >
+            <button
+              on:click={() => (
+                (conversionDone = false),
+                (converting = false),
+                (conversionOutput = ""),
+                (conversion_opts = ""),
+                (outputExpected = {}),
+                (conversionOutputFile = null)
+              )}>Re-convert</button
+            >
+          </div>
+        {/if}
       </div>
     {:else}
       <div bind class="preview" style:display={recording ? "block" : "none"}>
@@ -352,7 +779,7 @@
         <div class="track_list">
           {#each tracks as track}
             <div class="track">
-              <span class="title">{track.label}</span>
+              <span class="title">{track.lbl}</span>
               <div class="buttons">
                 <button
                   class="pause_resume"
@@ -412,6 +839,7 @@
           <select bind:value={videoSelect}>
             <option value="screen">Screen</option>
             <option value="camera">Webcam</option>
+            <option value="mix">Overlay webcam on screen</option>
           </select>
           <h2>Audio device</h2>
           <select bind:value={audioSelect}>
@@ -446,7 +874,18 @@
     width: 100vw;
     height: 100vh;
   }
-  :is(.done, .error) .buttons {
+  .conversion_output {
+    font-family: "Courier New", Courier, monospace;
+    padding: 10px;
+    border-radius: 3px;
+    border: 1px solid #ccc;
+    white-space: pre;
+    word-break: keep-all;
+    overflow-wrap: normal;
+    overflow: scroll;
+    max-height: 300px;
+  }
+  :is(.done, .error, .conversion) .buttons {
     display: flex;
     width: 100%;
     gap: 0.2rem;
@@ -464,6 +903,54 @@
     display: flex;
     width: 80vw;
     max-width: 400px;
+    &.conversion:not(.error) {
+      max-width: 600px;
+      overflow-y: scroll;
+      padding-top: 0px !important;
+      position: relative;
+      h2 {
+        margin-top: 0 !important;
+        position: sticky;
+        top: -1px;
+        width: 100%;
+        background: white;
+        padding: 10px 0;
+      }
+      details {
+        border: 1px dashed #ccc;
+        padding: 0.5em 0.5em 0;
+        border-radius: 5px;
+        margin-bottom: 5px;
+        summary {
+          list-style: none;
+          font-weight: bold;
+          margin: -0.5em -0.5em 0;
+          padding: 0.5em;
+          cursor: pointer;
+          border: 1px solid transparent;
+          transition: border-bottom-color 0.3s ease;
+          &::before {
+            content: "➜";
+            margin-right: 6px;
+            color: #999;
+            transition: transform 0.3s ease;
+            display: inline-block;
+          }
+          &:is([open] summary)::before {
+            transform: rotate(90deg);
+          }
+        }
+        &[open] summary {
+          border-bottom-color: #ccc;
+        }
+      }
+      img,
+      video {
+        border-radius: 5px;
+        box-shadow: rgba(50, 50, 93, 0.25) 0px 2px 5px -1px,
+          rgba(0, 0, 0, 0.3) 0px 1px 3px -1px;
+      }
+    }
     margin: 0 auto;
     border: 1px dashed #ccc;
     border-radius: 10px;
