@@ -696,8 +696,15 @@
           <div class="buttons">
             <button
               on:click={async (e) => {
+                // Remove all files
+                window.ffmpeg.FS("readdir", ".").forEach((i) => {
+                  if (![".", "..", "tmp", "home", "dev", "proc"].includes(i)) {
+                    window.ffmpeg.FS("unlink", i);
+                  }
+                });
                 let selected =
                   CONVERSIONS[conversionSelect.replace("opt_", "")];
+                outputExpected = selected.expected;
                 if (e.target.disabled) {
                   return;
                 }
@@ -721,22 +728,44 @@
                 });
                 window.ffmpeg.setLogger(({ message }) => {
                   conversionOutput = `${conversionOutput.trim()}\n${message}\n\n`;
+                  requestAnimationFrame(() =>
+                    document
+                      .querySelector("pre.conversion_output")
+                      .scrollBy(0, 1000)
+                  );
                 });
-                setInterval(() => {
-                  document
-                    .querySelector("pre.conversion_output")
-                    ?.scrollBy(0, 1000);
-                }, 100);
                 conversionOutput = "Uploading files to WebAssembly worker...";
                 for (let file of msg.files) {
                   window.ffmpeg.FS("writeFile", file.name, file.data);
                 }
-                await window.ffmpeg.run(...msg.arguments);
+                try {
+                  await window.ffmpeg.run(...msg.arguments);
+                } catch (e) {
+                  error = e.message;
+                }
                 for (let file of msg.files) {
-                  window.ffmpeg.FS("unlink", file.name, file.data);
+                  await window.ffmpeg.FS("unlink", file.name, file.data);
                 }
                 conversionDone = true;
                 converting = false;
+                console.log("Getting output: ", outputExpected);
+                if (
+                  !outputExpected.name ||
+                  !window.ffmpeg
+                    .FS("readdir", ".")
+                    .includes(outputExpected?.name)
+                ) {
+                  outputExpected.name = window.ffmpeg
+                    .FS("readdir", ".")
+                    .find(
+                      (i) =>
+                        ![".", "..", "tmp", "home", "dev", "proc"].includes(i)
+                    );
+                  outputExpected.mimeType = CONVERSIONS.find(
+                    (i) =>
+                      i.expected.extension === outputExpected.name.split(".")[1]
+                  ).mimeType;
+                }
                 conversionOutputFile = new Blob(
                   [window.ffmpeg.FS("readFile", outputExpected.name).buffer],
                   {
@@ -758,6 +787,30 @@
         {/if}
         {#if converting && !conversionDone}
           <pre class="conversion_output">{conversionOutput}</pre>
+          {#if conversionOutput.includes("pthread sent an error! ")}
+            <span
+              >Seems like there was an error, try again or download original?</span
+            >
+            <div class="buttons">
+              <button
+                on:click={() => (
+                  (conversionDone = false),
+                  (converting = false),
+                  (conversionOutput = ""),
+                  (conversion_opts = ""),
+                  (outputExpected = {}),
+                  (conversionOutputFile = null)
+                )}>Re-convert</button
+              >
+              <button
+                on:click={() =>
+                  saveBlob(
+                    output,
+                    "Screen Recording." + getExtension(output.type)
+                  )}>Download screen recording</button
+              >
+            </div>
+          {/if}
         {/if}
         {#if conversionDone}
           <details class="conversion_logs">
