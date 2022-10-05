@@ -699,6 +699,7 @@
     name="twitter:image"
     content="https://explosion-scratch.github.io/screen-recorder/banner.png"
   />
+  <link rel="apple-touch-icon" href="apple-touch-icon.png">
   <script src="coi-serviceworker.min.js"></script>
 </svelte:head>
 
