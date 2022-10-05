@@ -145,6 +145,11 @@
     },
   ];
   onMount(() => {
+    if('serviceWorker' in navigator){
+      navigator.serviceWorker.register('sw.js')
+        .then(reg => console.log('Service worker registered'))
+        .catch(err => console.log('Service worker not registered', err));
+    }
     videoConstraints.width = screen.width;
     videoConstraints.height = screen.height;
     const CUSTOM_LABELS = {};
@@ -478,6 +483,10 @@
     combinedStream.removeTrack(track);
   }
   function loadWorker() {
+    if (!window.SharedArrayBuffer){
+      error = "SharedArrayBuffer not allowed, please reload. If this persists open up an issue on GitHub";
+      return;
+    }
     if (workerLoaded || workerLoading) {
       return;
     }
