@@ -157,9 +157,6 @@
         return label;
       },
     });
-    if (window.SharedArrayBuffer) {
-      loadWorker();
-    }
   });
 
   async function startRecording() {
@@ -189,6 +186,10 @@
     }
     if (audioSelect === "microphone") {
       external.audio = true;
+    }
+    if (audioSelect === "none") {
+      externalAudio = false;
+      screenAudio = false;
     }
     if (audioSelect === "both") {
       external.audio = true;
@@ -267,7 +268,7 @@
         )} merged audio stream`;
       });
       notifs.show("Merged system and microphone audio");
-    } else {
+    } else if (audioSelect !== "none") {
       if (audioStreams.length !== 1) {
         console.debug({ audioStreams });
         throw new Error(
@@ -308,7 +309,7 @@
 
     combinedStream = new MediaStream([
       ...videoStream.getTracks(),
-      ...audioStream.getTracks(),
+      ...(audioSelect === "none" ? [] : audioStream.getTracks()),
     ]);
 
     tracks.forEach((track) => {
@@ -493,7 +494,7 @@
     }
     notifs.show("Loading ffmpeg...");
     ffmpeg.load().then(() => {
-      notifs.show("ffmpeg loaded");
+      notifs.show("FFmpeg loaded");
       workerLoaded = true;
       workerLoading = false;
       console.log("FFmpeg loaded", ffmpeg);
@@ -600,6 +601,7 @@
     return MIME_TYPES[type] || type.split("/")[1];
   }
   async function addFilesToConversion() {
+    loadWorker();
     try {
       console.log(output);
       conversion_opts = {
@@ -650,7 +652,55 @@
   }
 </script>
 
-<svelte:head><script src="coi-serviceworker.min.js"></script></svelte:head>
+<svelte:head>
+  <meta lang="en" />
+  <link rel="manifest" href="manifest.json" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="format-detection" content="telephone=no" />
+  <meta name="title" content="Screen recorder" />
+  <meta name="author" content="Explosion-Scratch" />
+  <meta name="keywords" content="Screen record,webm,convert,open source" />
+  <meta name="robots" content="index,follow" />
+  <meta name="language" content="English" />
+  <meta
+    name="description"
+    content="Screen record and convert from your web browser!"
+  />
+  <meta name="theme-color" content="#656C72" />
+  <meta name="og:type" content="website" />
+  <meta name="apple-mobile-web-app-title" content="Screen recorder" />
+  <meta name="og_site_name" content="Screen recorder" />
+  <meta name="og:site_name" content="Screen recorder" />
+  <meta name="og:locale" content="en_US" />
+  <meta
+    name="og:url"
+    content="https://explosion-scratch.github.io/screen-recorder"
+  />
+  <meta name="og:title" content="Screen recorder" />
+  <meta
+    name="og:description"
+    content="Screen record and convert from your web browser!"
+  />
+  <meta
+    name="og:image"
+    content="https://explosion-scratch.github.io/screen-recorder/banner.png"
+  />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta
+    name="twitter:url"
+    content="https://explosion-scratch.github.io/screen-recorder"
+  />
+  <meta name="twitter:title" content="Screen recorder" />
+  <meta
+    name="twitter:description"
+    content="Screen record and convert from your web browser!"
+  />
+  <meta
+    name="twitter:image"
+    content="https://explosion-scratch.github.io/screen-recorder/banner.png"
+  />
+  <script src="coi-serviceworker.min.js"></script>
+</svelte:head>
 
 <!-- BEGIN_HTML -->
 <ToastContainer />
@@ -668,16 +718,21 @@
           : "<unknown>"}</span
       >
       <div class="buttons">
-        <button on:click={() => location.reload()}>Reload page</button>
+        <button aria-label="Reload" on:click={() => location.reload()}
+          >Reload page</button
+        >
         {#if output}
           <button
+            aria-label="Reload page"
             on:click={() =>
               saveBlob(output, "Screen Recording." + getExtension(output.type))}
             >Download screen recording</button
           >
         {/if}
         {#if conversionOutputFile}
-          <button on:click={() => saveBlob(output, outputExpected.name)}
+          <button
+            aria-label="Download converted file"
+            on:click={() => saveBlob(output, outputExpected.name)}
             >Download converted file</button
           >
         {/if}
@@ -694,13 +749,18 @@
       />
       <div class="buttons">
         <button
+          aria-label="Download screen recording"
           on:click={() =>
             saveBlob(output, "Screen Recording." + getExtension(output.type))}
           >Download</button
         >
         <!-- TODO: Don't reload for re-record -->
-        <button on:click={() => location.reload()}>Re-record</button>
-        <button on:click={() => addFilesToConversion()}>Convert</button>
+        <button aria-label="Re-record" on:click={() => location.reload()}
+          >Re-record</button
+        >
+        <button aria-label="Convert" on:click={() => addFilesToConversion()}
+          >Convert</button
+        >
       </div>
     {:else if conversionScreen}
       <div class="buttons">
@@ -715,6 +775,7 @@
         {#if !conversionDone}
           <div class="buttons">
             <button
+              aria-label="Start converting"
               on:click={async (e) => {
                 // Remove all files
                 window.ffmpeg.FS("readdir", ".").forEach((i) => {
@@ -823,6 +884,7 @@
             >
             <div class="buttons">
               <button
+                aria-label="Re-convert file"
                 on:click={() => (
                   (conversionDone = false),
                   (converting = false),
@@ -833,6 +895,7 @@
                 )}>Re-convert</button
               >
               <button
+                aria-label="Download screen recording"
                 on:click={() =>
                   saveBlob(
                     output,
@@ -866,11 +929,13 @@
           {/if}
           <div class="buttons">
             <button
+              aria-label="Download conversion output"
               on:click={() =>
                 saveBlob(conversionOutputFile, outputExpected.name)}
               >Download</button
             >
             <button
+              aria-label="Download screen recorded original"
               on:click={() =>
                 saveBlob(
                   output,
@@ -878,6 +943,7 @@
                 )}>Download original</button
             >
             <button
+              aria-label="Re-convert"
               on:click={() => (
                 (conversionDone = false),
                 (converting = false),
@@ -897,6 +963,7 @@
       <div class="start_stop">
         {#if recording}
           <button
+            aria-label="Pause and resume recording"
             class="pause_resume"
             on:click={() =>
               recorder.state === "paused"
@@ -920,7 +987,10 @@
             {/if}
           </button>
         {/if}
-        <button on:click={() => (recording ? stopRecording() : record())}>
+        <button
+          aria-label="Start/stop recording"
+          on:click={() => (recording ? stopRecording() : record())}
+        >
           {#if recording}
             <svg width="32" height="32" viewBox="0 0 256 256"
               ><path
@@ -946,6 +1016,7 @@
               <span class="title">{track.lbl}</span>
               <div class="buttons">
                 <button
+                  aria-label="Pause or resume track"
                   class="pause_resume"
                   on:click={() => (track.enabled = !track.enabled)}
                 >
@@ -983,7 +1054,11 @@
                     {/if}
                   {/if}
                 </button>
-                <button class="stop" on:click={() => stopTrack(track)}>
+                <button
+                  aria-label="Stop track"
+                  class="stop"
+                  on:click={() => stopTrack(track)}
+                >
                   <svg width="32" height="32" viewBox="0 0 256 256"
                     ><path
                       fill="currentColor"
@@ -1008,7 +1083,10 @@
           <details>
             <summary>Additional video options</summary>
             <b>Start recording when:</b>
-            <select bind:value={videoStartWhen}>
+            <select
+              bind:value={videoStartWhen}
+              aria-label="When to start recording"
+            >
               <option value="immediately">Immediately</option>
               <option value="blur">When you leave this page</option>
               <option value="delay">In 5 seconds</option>
@@ -1016,23 +1094,30 @@
             <b>Video ideal resolution</b>
             <div class="resolution">
               <input
+                aria-label="Ideal video width"
                 type="text"
                 bind:value={videoConstraints.width}
                 placeholder="Width"
               />x<input
+                aria-label="Ideal video height"
                 bind:value={videoConstraints.height}
                 placeholder="Height"
                 type="text"
               />
             </div>
             <b>Ideal video framerate</b>
-            <input type="text" bind:value={videoConstraints.frameRate.ideal} />
+            <input
+              aria-label="Ideal framerate"
+              type="text"
+              bind:value={videoConstraints.frameRate.ideal}
+            />
           </details>
           <h2>Audio device</h2>
-          <select bind:value={audioSelect}>
+          <select bind:value={audioSelect} aria-label="Audio source">
             <option value="system">System audio</option>
             <option value="microphone">Mic audio</option>
             <option value="both">Both system and mic</option>
+            <option value="none">No audio</option>
           </select>
           <details>
             <summary>Additional audio options</summary>
@@ -1044,7 +1129,7 @@
             <label><input bind:checked={audioConstraints.noiseSuppression} type="checkbox"> Noise supression</label>
           </details>
           <h2>Output format</h2>
-          <select bind:value={mime}>
+          <select bind:value={mime} aria-label="Recording output format">
             {#each Object.keys(MIME_TYPES).filter( (i) => MediaRecorder.isTypeSupported(i) ) as type}
               <option value={type}>
                 .{getExtension(type)}
