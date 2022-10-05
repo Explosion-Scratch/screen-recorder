@@ -1383,4 +1383,27 @@
     display: flex;
     align-items: center;
   }
+  @media (max-width: 600px){
+      * {
+          box-sizing: border-box;
+      }
+      .container {
+          box-sizing: border-box;
+          padding: 5vmin !important;
+          margin: 0 !important;
+          box-shadow: none !important;
+          border: none !important;
+          width: 100vw !important;
+          max-width: none !important;
+          max-height: none !important;
+      }
+      .track_list {
+          width: 100% !important;
+      }
+  }
+
+  input[type=checkbox]{
+      display: inline-block;
+      width: 30px !important;
+  }
 </style>
