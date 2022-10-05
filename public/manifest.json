@@ -9,7 +9,7 @@
   "scope": "/screen-recorder",
   "start_url": "/screen-recorder",
   "icons": [
-    { "src": "icon/Logo_128.png", "sizes": "128x128", "type": "image/png" },
+    { "src": "icon/Logo_128.png", "sizes": "128x128", "type": "image/png", "purpose": "maskable" },
     { "src": "icon/Logo_256.png", "sizes": "256x256", "type": "image/png" },
     { "src": "icon/Logo_512.png", "sizes": "512x512", "type": "image/png" }
   ]
