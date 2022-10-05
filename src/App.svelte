@@ -4,7 +4,7 @@
   import ToastContainer from "./ToastContainer.svelte";
   import alterVid from "./canvasVid.js";
   import { onMount } from "svelte";
-  import { createFFmpeg, fetchFile } from "@ffmpeg/ffmpeg/dist/ffmpeg.min.js";
+  import { createFFmpeg } from "@ffmpeg/ffmpeg/dist/ffmpeg.min.js";
 
   //Streams
   let videoStream,
