@@ -97,8 +97,26 @@
   const CONVERSIONS = [
     {
       label: "Convert to GIF",
-      command: "-t 5 -i [INPUT] -vf showinfo -strict -2 output.gif",
+      command: "-i [INPUT] -vf showinfo -strict -2 output.gif",
       expected: { mimeType: "image/gif", name: "output.gif", extension: "gif" },
+    },
+    {
+      label: "Convert to high quality GIF",
+      command: `-y -i [INPUT] -filter_complex "fps=24,scale=1280:-1:flags=lanczos[x];[x]split[x1][x2]; [x1]palettegen[p];[x2][p]paletteuse" output.gif`,
+      expected: {
+        mimeType: "image/gif",
+        name: "output.gif",
+        extension: "gif",
+      },
+    },
+    {
+      label: "Remove the last few seconds of the video",
+      command: `-sseof -[PROMPT=How many seconds would you like to remove?] -i [INPUT] -c copy [OUTPUT=mp4]`,
+      expected: {
+        mimeType: "video/mp4",
+        name: "output.mp4",
+        extension: "mp4",
+      },
     },
     {
       label: "Convert to sped up GIF",
@@ -127,6 +145,8 @@
     },
   ];
   onMount(() => {
+    videoConstraints.width = screen.width;
+    videoConstraints.height = screen.height;
     const CUSTOM_LABELS = {};
     Object.defineProperty(MediaStreamTrack.prototype, "lbl", {
       get() {
@@ -618,7 +638,7 @@
       .replace("[INPUT]", "input." + getExtension(output.type))
       .replace(/\[PROMPT=([^\]]+)\]/, (_, p) =>
         replaceCommand(
-          prompt(p.replaceAll("!$%", "[").replaceAll("%$!")),
+          prompt(p.replaceAll("!$%", "[").replaceAll("%$!", "]")),
           selected
         )
       );
@@ -749,22 +769,32 @@
                 conversionDone = true;
                 converting = false;
                 console.log("Getting output: ", outputExpected);
+                if (!outputExpected.name) {
+                  try {
+                    outputExpected.name = window.ffmpeg
+                      .FS("readdir", ".")
+                      .find(
+                        (i) =>
+                          ![".", "..", "tmp", "home", "dev", "proc"].includes(i)
+                      );
+                    outputExpected.mimeType = CONVERSIONS.find(
+                      (i) =>
+                        i.expected.extension ===
+                        outputExpected.name.split(".")[1]
+                    ).mimeType;
+                  } catch (e) {
+                    console.log("Couldn't find output");
+                    return;
+                  }
+                }
                 if (
-                  !outputExpected.name ||
                   !window.ffmpeg
                     .FS("readdir", ".")
                     .includes(outputExpected?.name)
                 ) {
-                  outputExpected.name = window.ffmpeg
-                    .FS("readdir", ".")
-                    .find(
-                      (i) =>
-                        ![".", "..", "tmp", "home", "dev", "proc"].includes(i)
-                    );
-                  outputExpected.mimeType = CONVERSIONS.find(
-                    (i) =>
-                      i.expected.extension === outputExpected.name.split(".")[1]
-                  ).mimeType;
+                  notifs.show("Couldn't find output file");
+                  conversionOutput += "\nError: Couldn't find output file";
+                  return;
                 }
                 conversionOutputFile = new Blob(
                   [window.ffmpeg.FS("readFile", outputExpected.name).buffer],
@@ -787,7 +817,7 @@
         {/if}
         {#if converting && !conversionDone}
           <pre class="conversion_output">{conversionOutput}</pre>
-          {#if conversionOutput.includes("pthread sent an error! ")}
+          {#if /error/i.test(conversionOutput)}
             <span
               >Seems like there was an error, try again or download original?</span
             >
